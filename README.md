@@ -30,16 +30,16 @@ Node 1 — Discover        reads metadata config → selects tables
 Node 2 — Pull            runs SQL → validates → serialises results
     │
     ▼
-Node 3 — Analyse         structured JSON: metrics, trends, anomalies, confidence  [Phase 3]
+Node 3 — Analyse         Python pre-processing → LLM structured JSON analysis
     │
     ▼
-Node 4 — Generate        JSON → narrative report, dual-audience prompts            [Phase 3]
+Node 4 — Generate        JSON → dual-audience narrative report               
     │
     ▼
-Node 5 — Review          LangGraph interrupt → human approval gate                 [Phase 4]
+Node 5 — Review          LangGraph interrupt → human approval gate            [Phase 4]
     │
     ▼
-Node 6 — Publish         GCS + BigQuery + Looker Studio                            [Phase 4]
+Node 6 — Publish         GCS + BigQuery + Looker Studio                       [Phase 4]
 ```
 
 State flows through every node as a typed `AgentState` dictionary. Each node reads what it needs and writes its output back to state. Nothing is shared between nodes except through state — no global variables, no side effects.
@@ -106,7 +106,9 @@ supplier-bi-agent/
 │   │   └── metadata.yaml      # report definitions, SQL templates, security config
 │   ├── nodes/
 │   │   ├── discover.py        # Node 1 — table selection
-│   │   └── pull.py            # Node 2 — SQL execution and result serialisation
+│   │   ├── pull.py            # Node 2 — SQL execution and result serialisation
+│   │   ├── analyse.py         # Node 3 — pre-processing + structured JSON analysis
+│   │   └── generate.py        # Node 4 — dual-audience narrative report generation
 │   └── graph.py               # LangGraph state (AgentState) and graph wiring
 ├── data/
 │   ├── seed/
@@ -120,7 +122,7 @@ supplier-bi-agent/
 ├── dashboards/                # Looker Studio config — Phase 5
 ├── docs/
 │   └── bi-agent-roadmap.html  # interactive project tracker
-├── test_agent.py              # Phase 2 test suite (3 tests)
+├── test_agent.py              # test suite (5 tests — all passing)
 └── .env.example               # required environment variables
 ```
 
@@ -151,8 +153,8 @@ supplier-bi-agent/
 |---|---|---|
 | 1 — Data layer | ✅ Complete | BigQuery schema, 500k seed, daily append, Cloud Scheduler |
 | 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, LangGraph state, SQL templates, security layer |
-| 3 — Intelligence | 🔄 Next | Analyse + Generate nodes, dual-audience prompts, LangSmith tracing |
-| 4 — Control plane | ⬜ Planned | React audit UI, human review gate, scheduling |
+| 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports, SKU improvement plans |
+| 4 — Control plane | 🔄 Next | React audit UI, human review gate, scheduling |
 | 5 — Looker Studio | ⬜ Planned | Dashboards, hardening, end-to-end test |
 | 6 — Multi-agent | ⬜ Future | Router agent, parallel execution, Vertex AI NLP |
 | 7 — Supplier portal | ⬜ Future | Firebase Auth, supplier-facing React views |

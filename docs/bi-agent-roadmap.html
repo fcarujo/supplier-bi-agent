@@ -208,26 +208,26 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="phase-head" onclick="togglePhase(this)">
         <div class="phase-dot" style="background:#8b5cf6"></div>
         <div class="phase-title-wrap">
-          <div class="phase-name">Phase 3 — Intelligence (Analyse &amp; Generate)</div>
-          <div class="phase-timeline">~1–2 weeks · dual-audience prompts · improvement plans · guardrail node · LangSmith</div>
+          <div class="phase-name">Phase 3 — Intelligence (Analyse &amp; Generate) ✓</div>
+          <div class="phase-timeline">Complete · guardrail check · structured JSON analysis · dual-audience reports · SKU improvement plans</div>
         </div>
         <div class="phase-meta"><div class="phase-count" id="ph-count-2">0 / 9</div><div class="phase-chevron">›</div></div>
       </div>
       <div class="phase-body">
         <div class="group-label">Analyse node</div>
         <ul class="task-list" id="ph-tasks-2">
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Add guardrail check between Pull and Analyse: validate result schema against column allowlist per report type · flag PII drift · stop pipeline on violation</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Node 3 (Analyse): structured JSON output — key metrics, trends, anomalies, top problematic SKUs/categories, confidence score, flags. No free text.</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Add guardrail check between Pull and Analyse: validate result schema against column allowlist · blocked columns check · stop pipeline on violation</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Build Node 3 (Analyse): Python pre-processing → slimmed top-N summary → LLM structured JSON: metrics, trends, anomalies, top SKUs/categories, confidence score, flags. No free text.</span></li>
           <div class="group-label">Generate node — dual audience</div>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Generate — business overview mode: executive summary, portfolio incident/return trends, category and supplier rankings, cost of resolution analysis, top action items</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Generate — supplier account mode: supplier-specific SKU breakdown, incident type and return reason patterns, resolution cost, peer comparison, contextual improvement plan with actions per SKU</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Validate both modes produce complete structured output (JSON + narrative) — pipeline rejects malformed or incomplete outputs</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Build Generate — business overview mode: executive summary, portfolio incident/return trends, category and supplier rankings, cost of resolution analysis, priority actions</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Build Generate — supplier account mode: 3-layer structure (benchmark context → category drill-down → SKU-level specifics with customer voice and improvement plan per SKU)</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Validate both modes produce complete structured output (JSON + narrative) — pipeline flags malformed or incomplete outputs</span></li>
           <div class="group-label">Tracing &amp; evals</div>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Wire up LangSmith tracing across all 4 nodes: input, output, token count, latency per node per run</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build LangSmith eval suite: fixed test cases with known expected outputs for both audiences · run on every deploy</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Add structured output enforcement: Analyse and Generate reject any response deviating from required JSON schema</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Structured output enforcement: Analyse rejects responses deviating from required JSON schema · Generate validates required sections present</span></li>
           <div class="group-label">🔮 Portal foundation (design now, build in Phase 7)</div>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Ensure every approved report written to GCS and BigQuery includes supplierID, audience, reportType, and reportDate fields — portal will filter on these; retrofitting later is painful</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Every approved report includes supplierID, audience, reportType, and reportDate fields in report_json — portal will filter on these · retrofitting later is painful</span></li>
         </ul>
         <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-2" style="width:0%;background:#8b5cf6"></div></div>
       </div>
