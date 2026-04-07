@@ -1,0 +1,576 @@
+# Supplier BI Agent — Metadata Configuration
+# ============================================
+# Maps report types to BigQuery tables, allowed columns, SQL templates,
+# scheduling, and human review requirements.
+#
+# DESIGN PRINCIPLE:
+#   Scheduled reports use SQL templates defined here — version controlled,
+#   tested, and locked. Zero LLM involvement in query generation.
+#
+#   Ad-hoc reports (adhoc_business, adhoc_supplier) use LLM-generated SQL
+#   since the goal is open-ended. Human review is always required for these.
+#
+# SQL template placeholders:
+#   {project}     — GCP project ID
+#   {dataset}     — BigQuery dataset name
+#   {supplier_id} — injected at runtime for supplier-scoped reports
+#   {date_from}   — injected at runtime for adhoc date overrides
+#   {date_to}     — injected at runtime for adhoc date overrides
+
+project: supplier-bi-agent-2025
+dataset: supplier_bi
+
+# ── Report definitions ────────────────────────────────────────────────────────
+
+reports:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUSINESS OVERVIEW REPORTS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  weekly_supplier_overview:
+    description: "Weekly portfolio-level supplier performance for internal leadership"
+    audience: business
+    schedule: "0 8 * * 1"        # every Monday 08:00 UTC
+    human_review: false
+    confidence_threshold: 0.85
+    sql_mode: template            # uses sql_template — no LLM SQL generation
+    output: [bigquery, gcs, looker_studio]
+    tables:
+
+      orders:
+        allowed_columns:
+          - orderID
+          - supplierID
+          - productCategory
+          - orderDate
+          - grossRevenue
+          - netRevenue
+          - productCost
+          - fulfilmentChannel
+          - supplierTier
+          - supplierRegion
+          - productPriceTier
+          - hasIncident
+          - hasReturn
+          - unitQuantity
+        sql_template: |
+          SELECT
+            supplierID,
+            supplierTier,
+            supplierRegion,
+            productCategory,
+            fulfilmentChannel,
+            productPriceTier,
+            COUNT(orderID)                                                    AS total_orders,
+            SUM(unitQuantity)                                                 AS total_units,
+            ROUND(SUM(grossRevenue), 2)                                       AS total_gross_revenue,
+            ROUND(SUM(netRevenue), 2)                                         AS total_net_revenue,
+            SUM(CASE WHEN hasIncident = TRUE THEN 1 ELSE 0 END)               AS total_incidents,
+            ROUND(AVG(CASE WHEN hasIncident = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2) AS incident_rate_pct,
+            SUM(CASE WHEN hasReturn = TRUE THEN 1 ELSE 0 END)                 AS total_returns,
+            ROUND(AVG(CASE WHEN hasReturn = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2)  AS return_rate_pct
+          FROM `{project}.{dataset}.orders`
+          WHERE orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+          GROUP BY
+            supplierID, supplierTier, supplierRegion,
+            productCategory, fulfilmentChannel, productPriceTier
+          ORDER BY incident_rate_pct DESC, total_orders DESC
+
+      incidents:
+        allowed_columns:
+          - incidentID
+          - orderID
+          - supplierID
+          - productCategory
+          - incidentDate
+          - resolutionStatus
+          - incidentType
+          - incidentResolution
+          - resolutionCost
+          - productRating
+          - daysBetweenPurchaseAndIncident
+        sql_template: |
+          SELECT
+            supplierID,
+            productCategory,
+            incidentType,
+            incidentResolution,
+            resolutionStatus,
+            COUNT(incidentID)                         AS total_incidents,
+            ROUND(SUM(resolutionCost), 2)             AS total_resolution_cost,
+            ROUND(AVG(resolutionCost), 2)             AS avg_resolution_cost,
+            ROUND(AVG(productRating), 2)              AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
+          FROM `{project}.{dataset}.incidents`
+          WHERE incidentDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+          GROUP BY
+            supplierID, productCategory, incidentType,
+            incidentResolution, resolutionStatus
+          ORDER BY total_incidents DESC
+
+      returns:
+        allowed_columns:
+          - returnID
+          - orderID
+          - supplierID
+          - productCategory
+          - returnDate
+          - resolutionStatus
+          - buyersRemorseReason
+          - productRating
+          - daysBetweenPurchaseAndReturn
+        sql_template: |
+          SELECT
+            supplierID,
+            productCategory,
+            buyersRemorseReason,
+            resolutionStatus,
+            COUNT(returnID)                              AS total_returns,
+            ROUND(AVG(productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns`
+          WHERE returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+          GROUP BY
+            supplierID, productCategory, buyersRemorseReason, resolutionStatus
+          ORDER BY total_returns DESC
+
+      suppliers:
+        allowed_columns:
+          - supplierID
+          - supplierName
+          - supplierRegion
+          - supplierTier
+          - categorySpeciality
+          - onboardingDate
+        sql_template: |
+          SELECT
+            supplierID,
+            supplierName,
+            supplierRegion,
+            supplierTier,
+            categorySpeciality,
+            onboardingDate
+          FROM `{project}.{dataset}.suppliers`
+          ORDER BY supplierTier ASC, supplierName ASC
+
+
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  monthly_supplier_overview:
+    description: "Monthly portfolio-level supplier performance for internal leadership"
+    audience: business
+    schedule: "0 8 1 * *"        # 1st of every month 08:00 UTC
+    human_review: false
+    confidence_threshold: 0.85
+    sql_mode: template
+    output: [bigquery, gcs, looker_studio]
+    tables:
+
+      orders:
+        allowed_columns:
+          - orderID
+          - supplierID
+          - productCategory
+          - orderDate
+          - grossRevenue
+          - netRevenue
+          - productCost
+          - fulfilmentChannel
+          - supplierTier
+          - supplierRegion
+          - productPriceTier
+          - hasIncident
+          - hasReturn
+          - unitQuantity
+        sql_template: |
+          SELECT
+            supplierID,
+            supplierTier,
+            supplierRegion,
+            productCategory,
+            fulfilmentChannel,
+            productPriceTier,
+            COUNT(orderID)                                                    AS total_orders,
+            SUM(unitQuantity)                                                 AS total_units,
+            ROUND(SUM(grossRevenue), 2)                                       AS total_gross_revenue,
+            ROUND(SUM(netRevenue), 2)                                         AS total_net_revenue,
+            SUM(CASE WHEN hasIncident = TRUE THEN 1 ELSE 0 END)               AS total_incidents,
+            ROUND(AVG(CASE WHEN hasIncident = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2) AS incident_rate_pct,
+            SUM(CASE WHEN hasReturn = TRUE THEN 1 ELSE 0 END)                 AS total_returns,
+            ROUND(AVG(CASE WHEN hasReturn = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2)  AS return_rate_pct
+          FROM `{project}.{dataset}.orders`
+          WHERE orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            supplierID, supplierTier, supplierRegion,
+            productCategory, fulfilmentChannel, productPriceTier
+          ORDER BY incident_rate_pct DESC, total_orders DESC
+
+      incidents:
+        allowed_columns:
+          - incidentID
+          - orderID
+          - supplierID
+          - productCategory
+          - incidentDate
+          - resolutionStatus
+          - incidentType
+          - incidentResolution
+          - resolutionCost
+          - productRating
+          - daysBetweenPurchaseAndIncident
+          - incidentCustomerComment
+        sql_template: |
+          SELECT
+            supplierID,
+            productCategory,
+            incidentType,
+            incidentResolution,
+            resolutionStatus,
+            COUNT(incidentID)                             AS total_incidents,
+            ROUND(SUM(resolutionCost), 2)                AS total_resolution_cost,
+            ROUND(AVG(resolutionCost), 2)                AS avg_resolution_cost,
+            ROUND(AVG(productRating), 2)                 AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
+          FROM `{project}.{dataset}.incidents`
+          WHERE incidentDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            supplierID, productCategory, incidentType,
+            incidentResolution, resolutionStatus
+          ORDER BY total_incidents DESC
+
+      returns:
+        allowed_columns:
+          - returnID
+          - orderID
+          - supplierID
+          - productCategory
+          - returnDate
+          - resolutionStatus
+          - buyersRemorseReason
+          - buyersRemorseComment
+          - productRating
+          - daysBetweenPurchaseAndReturn
+        sql_template: |
+          SELECT
+            supplierID,
+            productCategory,
+            buyersRemorseReason,
+            resolutionStatus,
+            COUNT(returnID)                              AS total_returns,
+            ROUND(AVG(productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns`
+          WHERE returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            supplierID, productCategory, buyersRemorseReason, resolutionStatus
+          ORDER BY total_returns DESC
+
+      suppliers:
+        allowed_columns:
+          - supplierID
+          - supplierName
+          - supplierRegion
+          - supplierTier
+          - categorySpeciality
+          - onboardingDate
+        sql_template: |
+          SELECT
+            supplierID,
+            supplierName,
+            supplierRegion,
+            supplierTier,
+            categorySpeciality,
+            onboardingDate
+          FROM `{project}.{dataset}.suppliers`
+          ORDER BY supplierTier ASC, supplierName ASC
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SUPPLIER ACCOUNT REPORTS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  monthly_supplier_account:
+    description: "Monthly per-supplier account report with SKU-level drill-down and improvement plans"
+    audience: supplier
+    schedule: "0 8 1 * *"        # 1st of every month 08:00 UTC
+    human_review: false
+    confidence_threshold: 0.85
+    sql_mode: template
+    supplier_scoped: true         # {supplier_id} injected automatically at runtime
+    output: [bigquery, gcs, looker_studio]
+    tables:
+
+      orders:
+        allowed_columns:
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - orderDate
+          - grossRevenue
+          - netRevenue
+          - productCost
+          - fulfilmentChannel
+          - productPriceTier
+          - hasIncident
+          - hasReturn
+          - unitQuantity
+        sql_template: |
+          SELECT
+            productSKU,
+            productCategory,
+            productPriceTier,
+            fulfilmentChannel,
+            COUNT(orderID)                                                    AS total_orders,
+            SUM(unitQuantity)                                                 AS total_units,
+            ROUND(SUM(grossRevenue), 2)                                       AS total_gross_revenue,
+            ROUND(SUM(netRevenue), 2)                                         AS total_net_revenue,
+            ROUND(SUM(productCost), 2)                                        AS total_product_cost,
+            SUM(CASE WHEN hasIncident = TRUE THEN 1 ELSE 0 END)               AS total_incidents,
+            ROUND(AVG(CASE WHEN hasIncident = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2) AS incident_rate_pct,
+            SUM(CASE WHEN hasReturn = TRUE THEN 1 ELSE 0 END)                 AS total_returns,
+            ROUND(AVG(CASE WHEN hasReturn = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2)  AS return_rate_pct
+          FROM `{project}.{dataset}.orders`
+          WHERE supplierID = '{supplier_id}'
+            AND orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            productSKU, productCategory, productPriceTier, fulfilmentChannel
+          ORDER BY total_incidents DESC, total_orders DESC
+
+      incidents:
+        allowed_columns:
+          - incidentID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - incidentDate
+          - resolutionStatus
+          - incidentType
+          - incidentResolution
+          - resolutionCost
+          - productRating
+          - incidentCustomerComment
+          - customerReview
+          - daysBetweenPurchaseAndIncident
+        sql_template: |
+          SELECT
+            productSKU,
+            productCategory,
+            incidentType,
+            incidentResolution,
+            resolutionStatus,
+            COUNT(incidentID)                              AS total_incidents,
+            ROUND(SUM(resolutionCost), 2)                 AS total_resolution_cost,
+            ROUND(AVG(resolutionCost), 2)                 AS avg_resolution_cost,
+            ROUND(AVG(productRating), 2)                  AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
+          FROM `{project}.{dataset}.incidents`
+          WHERE supplierID = '{supplier_id}'
+            AND incidentDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            productSKU, productCategory, incidentType,
+            incidentResolution, resolutionStatus
+          ORDER BY total_incidents DESC
+
+      returns:
+        allowed_columns:
+          - returnID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - returnDate
+          - resolutionStatus
+          - buyersRemorseReason
+          - buyersRemorseComment
+          - productRating
+          - customerReview
+          - daysBetweenPurchaseAndReturn
+        sql_template: |
+          SELECT
+            productSKU,
+            productCategory,
+            buyersRemorseReason,
+            resolutionStatus,
+            COUNT(returnID)                              AS total_returns,
+            ROUND(AVG(productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns`
+          WHERE supplierID = '{supplier_id}'
+            AND returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          GROUP BY
+            productSKU, productCategory, buyersRemorseReason, resolutionStatus
+          ORDER BY total_returns DESC
+
+      suppliers:
+        allowed_columns:
+          - supplierID
+          - supplierName
+          - supplierRegion
+          - supplierTier
+          - categorySpeciality
+          - onboardingDate
+        sql_template: |
+          SELECT
+            supplierID,
+            supplierName,
+            supplierRegion,
+            supplierTier,
+            categorySpeciality,
+            onboardingDate
+          FROM `{project}.{dataset}.suppliers`
+          WHERE supplierID = '{supplier_id}'
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # AD-HOC REPORTS — LLM SQL GENERATION
+  # These always require human review. SQL is generated by the LLM at runtime.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  adhoc_business:
+    description: "On-demand business overview — open-ended goal, LLM generates SQL, always reviewed"
+    audience: business
+    schedule: null
+    human_review: true
+    confidence_threshold: 0.0
+    sql_mode: llm                 # LLM generates SQL at runtime
+    output: [bigquery, gcs]
+    tables:
+      orders:
+        allowed_columns:
+          - orderID
+          - supplierID
+          - productCategory
+          - orderDate
+          - grossRevenue
+          - netRevenue
+          - productCost
+          - fulfilmentChannel
+          - supplierTier
+          - supplierRegion
+          - productPriceTier
+          - hasIncident
+          - hasReturn
+          - unitQuantity
+        filters: []
+      incidents:
+        allowed_columns:
+          - incidentID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - incidentDate
+          - resolutionStatus
+          - incidentType
+          - incidentResolution
+          - resolutionCost
+          - productRating
+          - incidentCustomerComment
+          - customerReview
+          - daysBetweenPurchaseAndIncident
+        filters: []
+      returns:
+        allowed_columns:
+          - returnID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - returnDate
+          - resolutionStatus
+          - buyersRemorseReason
+          - buyersRemorseComment
+          - productRating
+          - customerReview
+          - daysBetweenPurchaseAndReturn
+        filters: []
+      suppliers:
+        allowed_columns:
+          - supplierID
+          - supplierName
+          - supplierRegion
+          - supplierTier
+          - categorySpeciality
+          - onboardingDate
+        filters: []
+
+  adhoc_supplier:
+    description: "On-demand supplier account — open-ended goal, LLM generates SQL, always reviewed"
+    audience: supplier
+    schedule: null
+    human_review: true
+    confidence_threshold: 0.0
+    sql_mode: llm
+    supplier_scoped: true
+    output: [bigquery, gcs]
+    tables:
+      orders:
+        allowed_columns:
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - orderDate
+          - grossRevenue
+          - netRevenue
+          - productCost
+          - fulfilmentChannel
+          - productPriceTier
+          - hasIncident
+          - hasReturn
+          - unitQuantity
+        filters: []
+      incidents:
+        allowed_columns:
+          - incidentID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - incidentDate
+          - resolutionStatus
+          - incidentType
+          - incidentResolution
+          - resolutionCost
+          - productRating
+          - incidentCustomerComment
+          - customerReview
+          - daysBetweenPurchaseAndIncident
+        filters: []
+      returns:
+        allowed_columns:
+          - returnID
+          - orderID
+          - supplierID
+          - productCategory
+          - productSKU
+          - returnDate
+          - resolutionStatus
+          - buyersRemorseReason
+          - buyersRemorseComment
+          - productRating
+          - customerReview
+          - daysBetweenPurchaseAndReturn
+        filters: []
+      suppliers:
+        allowed_columns:
+          - supplierID
+          - supplierName
+          - supplierRegion
+          - supplierTier
+          - categorySpeciality
+          - onboardingDate
+        filters: []
+
+
+# ── Security constraints ──────────────────────────────────────────────────────
+
+security:
+  blocked_columns:
+    - customerID
+    - netRevenue             # internal margin — never exposed to supplier reports
+  max_raw_rows: 10000
+  min_rows: 10
