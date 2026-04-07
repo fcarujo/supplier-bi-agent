@@ -11,3 +11,4 @@ seed_output/
 *.csv
 node_modules/
 .DS_Store
+enrich_checkpoint.json
