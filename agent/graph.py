@@ -3,14 +3,22 @@ Supplier BI Agent — LangGraph Graph
 =====================================
 Defines the agent state and wires all nodes into a directed graph.
 
-State flows through nodes in sequence:
-  Trigger → Discover → Pull → Analyse → Generate → Review → Publish
+Phase 3 additions:
+  - analyse_node and generate_node now wired in (no longer placeholders)
+  - LangSmith tracing enabled via environment variable
+  - Confidence-based routing: low confidence reports flagged before review
 
-Each node reads from state and writes back to it.
-The human review gate is a LangGraph interrupt — the pipeline
-pauses here until approved, rejected, or edited via the control plane.
+Phase 2 (complete):
+  - discover_node: table selection (template mode skips LLM)
+  - pull_node: SQL execution (templates for scheduled, LLM for ad-hoc)
+  - Security: input sanitiser, SQL validator, supplier scoping
+
+Phase 4 (planned):
+  - review_node: LangGraph human-in-the-loop interrupt
+  - publish_node: GCS + BigQuery + Looker Studio
 """
 
+import os
 import uuid
 from typing import Optional
 from typing_extensions import TypedDict
@@ -18,48 +26,50 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from agent.nodes.discover import discover_node
-from agent.nodes.pull import pull_node
+from agent.nodes.discover  import discover_node
+from agent.nodes.pull      import pull_node
+from agent.nodes.analyse   import analyse_node
+from agent.nodes.generate  import generate_node
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
-    # ── Input ─────────────────────────────────────────────────────────────────
+    # Input
     report_type:    str
-    audience:       str              # "business" or "supplier"
-    supplier_id:    Optional[str]    # required for supplier-scoped reports
-    date_from:      Optional[str]    # override date range (adhoc reports)
-    date_to:        Optional[str]    # override date range (adhoc reports)
-    goal:           str              # human-readable report goal
+    audience:       str
+    supplier_id:    Optional[str]
+    date_from:      Optional[str]
+    date_to:        Optional[str]
+    goal:           str
 
-    # ── Discover node output ──────────────────────────────────────────────────
-    selected_tables:      Optional[list]   # tables chosen for this report
-    table_schemas:        Optional[dict]   # column metadata per table
-    discover_reasoning:   Optional[str]    # LLM reasoning trace
+    # Discover output
+    selected_tables:      Optional[list]
+    table_schemas:        Optional[dict]
+    discover_reasoning:   Optional[str]
 
-    # ── Pull node output ──────────────────────────────────────────────────────
-    queries:          Optional[dict]   # {table_name: sql_string}
-    query_results:    Optional[dict]   # {table_name: aggregated_data_json}
-    row_counts:       Optional[dict]   # {table_name: int}
-    pull_validation:  Optional[dict]   # {table_name: {status, warnings}}
+    # Pull output
+    queries:          Optional[dict]
+    query_results:    Optional[dict]
+    row_counts:       Optional[dict]
+    pull_validation:  Optional[dict]
 
-    # ── Analyse node output (Phase 3) ─────────────────────────────────────────
-    analysis:         Optional[dict]   # structured JSON analysis
-    confidence:       Optional[float]  # 0.0 - 1.0
-    flags:            Optional[list]   # low confidence warnings, anomalies
+    # Analyse output
+    analysis:         Optional[dict]
+    confidence:       Optional[float]
+    flags:            Optional[list]
 
-    # ── Generate node output (Phase 3) ────────────────────────────────────────
-    report_narrative: Optional[str]    # human-readable report text
-    report_json:      Optional[dict]   # structured report for Looker Studio
+    # Generate output
+    report_narrative: Optional[str]
+    report_json:      Optional[dict]
 
-    # ── Review node output (Phase 4) ──────────────────────────────────────────
+    # Review output (Phase 4)
     approved:         Optional[bool]
     reviewer:         Optional[str]
     review_notes:     Optional[str]
     approved_at:      Optional[str]
 
-    # ── Pipeline metadata ─────────────────────────────────────────────────────
+    # Pipeline metadata
     run_id:           Optional[str]
     errors:           Optional[list]
     current_node:     Optional[str]
@@ -71,23 +81,22 @@ def build_graph():
     """
     Build and compile the LangGraph agent graph.
 
-    Phase 2: discover → pull → END (analyse/generate/review/publish are placeholders)
-    Phase 3: adds analyse + generate nodes
-    Phase 4: adds review interrupt + publish node
+    Phase 3: discover → pull → analyse → generate → review* → publish* → END
+    * review and publish are placeholders until Phase 4
     """
     graph = StateGraph(AgentState)
 
     # ── Register nodes ────────────────────────────────────────────────────────
     graph.add_node("discover", discover_node)
     graph.add_node("pull",     pull_node)
+    graph.add_node("analyse",  analyse_node)
+    graph.add_node("generate", generate_node)
 
-    # Placeholder nodes — implemented in Phase 3 and 4
-    graph.add_node("analyse",  _placeholder_node("analyse"))
-    graph.add_node("generate", _placeholder_node("generate"))
+    # Placeholders — Phase 4
     graph.add_node("review",   _placeholder_node("review"))
     graph.add_node("publish",  _placeholder_node("publish"))
 
-    # ── Define edges ──────────────────────────────────────────────────────────
+    # ── Edges ─────────────────────────────────────────────────────────────────
     graph.set_entry_point("discover")
     graph.add_edge("discover", "pull")
     graph.add_edge("pull",     "analyse")
@@ -96,14 +105,11 @@ def build_graph():
     graph.add_edge("review",   "publish")
     graph.add_edge("publish",  END)
 
-    # ── Compile ───────────────────────────────────────────────────────────────
-    # MemorySaver for development — replaced with persistent checkpointer in Phase 4
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
 
 
 def _placeholder_node(name: str):
-    """Pass-through node for phases not yet implemented."""
     def node(state: AgentState) -> dict:
         print(f"  [{name}] placeholder — not yet implemented")
         return {"current_node": name}
@@ -133,12 +139,10 @@ def run_agent(
         date_from:    Optional date override (YYYY-MM-DD) for adhoc reports
         date_to:      Optional date override (YYYY-MM-DD) for adhoc reports
         thread_id:    LangGraph thread ID — auto-generated if not provided
-
-    Returns:
-        Final agent state after all nodes have run
     """
     graph     = build_graph()
     thread_id = thread_id or str(uuid.uuid4())
+    run_id    = str(uuid.uuid4())
 
     initial_state: AgentState = {
         "report_type":        report_type,
@@ -163,7 +167,7 @@ def run_agent(
         "reviewer":           None,
         "review_notes":       None,
         "approved_at":        None,
-        "run_id":             str(uuid.uuid4()),
+        "run_id":             run_id,
         "errors":             [],
         "current_node":       None,
     }
@@ -177,7 +181,7 @@ def run_agent(
     print(f"  Goal:        {goal}")
     if supplier_id:
         print(f"  Supplier:    {supplier_id}")
-    print(f"  Run ID:      {initial_state['run_id']}")
+    print(f"  Run ID:      {run_id}")
     print(f"{'='*60}\n")
 
     return graph.invoke(initial_state, config=config)
