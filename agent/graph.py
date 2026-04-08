@@ -1,24 +1,21 @@
 """
 Supplier BI Agent — LangGraph Graph
 =====================================
-Defines the agent state and wires all nodes into a directed graph.
+Full pipeline — all 7 nodes wired.
 
-Phase 3 additions:
-  - analyse_node and generate_node now wired in (no longer placeholders)
-  - LangSmith tracing enabled via environment variable
-  - Confidence-based routing: low confidence reports flagged before review
+  discover → pull → analyse → generate → validate → review → publish
 
-Phase 2 (complete):
-  - discover_node: table selection (template mode skips LLM)
-  - pull_node: SQL execution (templates for scheduled, LLM for ad-hoc)
-  - Security: input sanitiser, SQL validator, supplier scoping
+Phase 4 additions:
+  - validate_node: semantic validation against BigQuery ground truth
+  - review_node: policy engine → auto_approve / queue / escalate
+  - publish_node: GCS + BigQuery approved_reports + agent_runs update
 
-Phase 4 (planned):
-  - review_node: LangGraph human-in-the-loop interrupt
-  - publish_node: GCS + BigQuery + Looker Studio
+AgentState extended with:
+  - validation: semantic validation summary
+  - policy_outcome: policy engine decision and rule results
+  - gcs_path: published report location
 """
 
-import os
 import uuid
 from typing import Optional
 from typing_extensions import TypedDict
@@ -30,6 +27,9 @@ from agent.nodes.discover  import discover_node
 from agent.nodes.pull      import pull_node
 from agent.nodes.analyse   import analyse_node
 from agent.nodes.generate  import generate_node
+from agent.nodes.validate  import validate_node
+from agent.nodes.review    import review_node
+from agent.nodes.publish   import publish_node
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -63,11 +63,18 @@ class AgentState(TypedDict):
     report_narrative: Optional[str]
     report_json:      Optional[dict]
 
+    # Validate output (Phase 4)
+    validation:       Optional[dict]
+
     # Review output (Phase 4)
     approved:         Optional[bool]
     reviewer:         Optional[str]
     review_notes:     Optional[str]
     approved_at:      Optional[str]
+    policy_outcome:   Optional[dict]
+
+    # Publish output (Phase 4)
+    gcs_path:         Optional[str]
 
     # Pipeline metadata
     run_id:           Optional[str]
@@ -75,46 +82,45 @@ class AgentState(TypedDict):
     current_node:     Optional[str]
 
 
+# ── Conditional edge — skip publish if not approved ───────────────────────────
+
+def should_publish(state: AgentState) -> str:
+    """Only proceed to publish if the report was approved."""
+    if state.get("approved"):
+        return "publish"
+    return END
+
+
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
 def build_graph():
-    """
-    Build and compile the LangGraph agent graph.
-
-    Phase 3: discover → pull → analyse → generate → review* → publish* → END
-    * review and publish are placeholders until Phase 4
-    """
     graph = StateGraph(AgentState)
 
-    # ── Register nodes ────────────────────────────────────────────────────────
-    graph.add_node("discover", discover_node)
-    graph.add_node("pull",     pull_node)
-    graph.add_node("analyse",  analyse_node)
-    graph.add_node("generate", generate_node)
+    graph.add_node("discover",  discover_node)
+    graph.add_node("pull",      pull_node)
+    graph.add_node("analyse",   analyse_node)
+    graph.add_node("generate",  generate_node)
+    graph.add_node("validate",  validate_node)
+    graph.add_node("review",    review_node)
+    graph.add_node("publish",   publish_node)
 
-    # Placeholders — Phase 4
-    graph.add_node("review",   _placeholder_node("review"))
-    graph.add_node("publish",  _placeholder_node("publish"))
-
-    # ── Edges ─────────────────────────────────────────────────────────────────
     graph.set_entry_point("discover")
-    graph.add_edge("discover", "pull")
-    graph.add_edge("pull",     "analyse")
-    graph.add_edge("analyse",  "generate")
-    graph.add_edge("generate", "review")
-    graph.add_edge("review",   "publish")
-    graph.add_edge("publish",  END)
+    graph.add_edge("discover",  "pull")
+    graph.add_edge("pull",      "analyse")
+    graph.add_edge("analyse",   "generate")
+    graph.add_edge("generate",  "validate")
+    graph.add_edge("validate",  "review")
+
+    # Conditional edge — only publish if approved
+    graph.add_conditional_edges(
+        "review",
+        should_publish,
+        {"publish": "publish", END: END}
+    )
+    graph.add_edge("publish", END)
 
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
-
-
-def _placeholder_node(name: str):
-    def node(state: AgentState) -> dict:
-        print(f"  [{name}] placeholder — not yet implemented")
-        return {"current_node": name}
-    node.__name__ = name
-    return node
 
 
 # ── Convenience runner ────────────────────────────────────────────────────────
@@ -128,18 +134,6 @@ def run_agent(
     date_to:     str  = None,
     thread_id:   str  = None,
 ) -> AgentState:
-    """
-    Run the agent pipeline end-to-end.
-
-    Args:
-        report_type:  Must match a key in agent/config/metadata.yaml
-        goal:         Human-readable description of what the report should cover
-        audience:     "business" or "supplier"
-        supplier_id:  Required for supplier-scoped reports
-        date_from:    Optional date override (YYYY-MM-DD) for adhoc reports
-        date_to:      Optional date override (YYYY-MM-DD) for adhoc reports
-        thread_id:    LangGraph thread ID — auto-generated if not provided
-    """
     graph     = build_graph()
     thread_id = thread_id or str(uuid.uuid4())
     run_id    = str(uuid.uuid4())
@@ -163,10 +157,13 @@ def run_agent(
         "flags":              None,
         "report_narrative":   None,
         "report_json":        None,
+        "validation":         None,
         "approved":           None,
         "reviewer":           None,
         "review_notes":       None,
         "approved_at":        None,
+        "policy_outcome":     None,
+        "gcs_path":           None,
         "run_id":             run_id,
         "errors":             [],
         "current_node":       None,

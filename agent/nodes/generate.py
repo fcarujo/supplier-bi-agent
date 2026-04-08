@@ -23,6 +23,7 @@ Output:
 
 import json
 import os
+import time
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -97,17 +98,27 @@ Analysis data:
 
 Write the full report following the structure above."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
+    for attempt in range(3):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            break
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                if attempt < 2:
+                    wait = 30 * (attempt + 1)
+                    print(f"  [generate] API overloaded — retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+            else:
+                raise
 
     return response.content[0].text.strip()
-
-
-# ── Supplier account report generator ────────────────────────────────────────
 
 def generate_supplier_report(
     client:      Anthropic,
@@ -197,12 +208,25 @@ Analysis data:
 Write the full report following the structure above.
 Be specific — name SKUs, categories, and use numbers throughout."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
+    for attempt in range(3):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            break
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                if attempt < 2:
+                    wait = 30 * (attempt + 1)
+                    print(f"  [generate] API overloaded — retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+            else:
+                raise
 
     return response.content[0].text.strip()
 
@@ -257,7 +281,7 @@ def validate_report(narrative: str, report_json: dict) -> list:
     ]
     required_sections_supplier = [
         "Account Summary", "Performance vs Benchmark",
-        "Category Performance",
+        "Category Performance", "Improvement Plan"
     ]
 
     audience = report_json.get("audience", "business")

@@ -20,6 +20,7 @@ The Generate node (next) turns this JSON into the narrative report.
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -462,12 +463,25 @@ Data:
 
 Return only the JSON object. Keep all string values concise — one sentence maximum per field."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
+    for attempt in range(3):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            break
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                if attempt < 2:
+                    wait = 30 * (attempt + 1)
+                    print(f"  [analyse] API overloaded — retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+            else:
+                raise
 
     raw = response.content[0].text.strip()
 

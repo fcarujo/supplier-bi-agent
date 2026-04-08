@@ -92,21 +92,22 @@ reports:
           - daysBetweenPurchaseAndIncident
         sql_template: |
           SELECT
-            supplierID,
-            productCategory,
-            incidentType,
-            incidentResolution,
-            resolutionStatus,
-            COUNT(incidentID)                         AS total_incidents,
-            ROUND(SUM(resolutionCost), 2)             AS total_resolution_cost,
-            ROUND(AVG(resolutionCost), 2)             AS avg_resolution_cost,
-            ROUND(AVG(productRating), 2)              AS avg_product_rating,
-            ROUND(AVG(daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
-          FROM `{project}.{dataset}.incidents`
-          WHERE incidentDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+            i.supplierID,
+            i.productCategory,
+            i.incidentType,
+            i.incidentResolution,
+            i.resolutionStatus,
+            COUNT(i.incidentID)                           AS total_incidents,
+            ROUND(SUM(i.resolutionCost), 2)               AS total_resolution_cost,
+            ROUND(AVG(i.resolutionCost), 2)               AS avg_resolution_cost,
+            ROUND(AVG(i.productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(i.daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
+          FROM `{project}.{dataset}.incidents` i
+          INNER JOIN `{project}.{dataset}.orders` o ON i.orderID = o.orderID
+          WHERE o.orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
           GROUP BY
-            supplierID, productCategory, incidentType,
-            incidentResolution, resolutionStatus
+            i.supplierID, i.productCategory, i.incidentType,
+            i.incidentResolution, i.resolutionStatus
           ORDER BY total_incidents DESC
 
       returns:
@@ -122,17 +123,18 @@ reports:
           - daysBetweenPurchaseAndReturn
         sql_template: |
           SELECT
-            supplierID,
-            productCategory,
-            buyersRemorseReason,
-            resolutionStatus,
-            COUNT(returnID)                              AS total_returns,
-            ROUND(AVG(productRating), 2)                AS avg_product_rating,
-            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
-          FROM `{project}.{dataset}.returns`
-          WHERE returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+            r.supplierID,
+            r.productCategory,
+            r.buyersRemorseReason,
+            r.resolutionStatus,
+            COUNT(r.returnID)                              AS total_returns,
+            ROUND(AVG(r.productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(r.daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns` r
+          INNER JOIN `{project}.{dataset}.orders` o ON r.orderID = o.orderID
+          WHERE o.orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
           GROUP BY
-            supplierID, productCategory, buyersRemorseReason, resolutionStatus
+            r.supplierID, r.productCategory, r.buyersRemorseReason, r.resolutionStatus
           ORDER BY total_returns DESC
 
       suppliers:
@@ -253,17 +255,18 @@ reports:
           - daysBetweenPurchaseAndReturn
         sql_template: |
           SELECT
-            supplierID,
-            productCategory,
-            buyersRemorseReason,
-            resolutionStatus,
-            COUNT(returnID)                              AS total_returns,
-            ROUND(AVG(productRating), 2)                AS avg_product_rating,
-            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
-          FROM `{project}.{dataset}.returns`
-          WHERE returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            r.supplierID,
+            r.productCategory,
+            r.buyersRemorseReason,
+            r.resolutionStatus,
+            COUNT(r.returnID)                              AS total_returns,
+            ROUND(AVG(r.productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(r.daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns` r
+          INNER JOIN `{project}.{dataset}.orders` o ON r.orderID = o.orderID
+          WHERE o.orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
           GROUP BY
-            supplierID, productCategory, buyersRemorseReason, resolutionStatus
+            r.supplierID, r.productCategory, r.buyersRemorseReason, r.resolutionStatus
           ORDER BY total_returns DESC
 
       suppliers:
@@ -356,22 +359,24 @@ reports:
           - daysBetweenPurchaseAndIncident
         sql_template: |
           SELECT
-            productSKU,
-            productCategory,
-            incidentType,
-            incidentResolution,
-            resolutionStatus,
-            COUNT(incidentID)                              AS total_incidents,
-            ROUND(SUM(resolutionCost), 2)                 AS total_resolution_cost,
-            ROUND(AVG(resolutionCost), 2)                 AS avg_resolution_cost,
-            ROUND(AVG(productRating), 2)                  AS avg_product_rating,
-            ROUND(AVG(daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
-          FROM `{project}.{dataset}.incidents`
-          WHERE supplierID = '{supplier_id}'
-            AND incidentDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            i.supplierID,
+            i.productSKU,
+            i.productCategory,
+            i.incidentType,
+            i.incidentResolution,
+            i.resolutionStatus,
+            COUNT(i.incidentID)                           AS total_incidents,
+            ROUND(SUM(i.resolutionCost), 2)               AS total_resolution_cost,
+            ROUND(AVG(i.resolutionCost), 2)               AS avg_resolution_cost,
+            ROUND(AVG(i.productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(i.daysBetweenPurchaseAndIncident), 1) AS avg_days_to_incident
+          FROM `{project}.{dataset}.incidents` i
+          INNER JOIN `{project}.{dataset}.orders` o ON i.orderID = o.orderID
+          WHERE o.orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            AND i.supplierID = '{supplier_id}'
           GROUP BY
-            productSKU, productCategory, incidentType,
-            incidentResolution, resolutionStatus
+            i.supplierID, i.productSKU, i.productCategory, i.incidentType,
+            i.incidentResolution, i.resolutionStatus
           ORDER BY total_incidents DESC
 
       returns:
@@ -390,19 +395,22 @@ reports:
           - daysBetweenPurchaseAndReturn
         sql_template: |
           SELECT
-            productSKU,
-            productCategory,
-            buyersRemorseReason,
-            resolutionStatus,
-            COUNT(returnID)                              AS total_returns,
-            ROUND(AVG(productRating), 2)                AS avg_product_rating,
-            ROUND(AVG(daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
-          FROM `{project}.{dataset}.returns`
-          WHERE supplierID = '{supplier_id}'
-            AND returnDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            r.supplierID,
+            r.productSKU,
+            r.productCategory,
+            r.buyersRemorseReason,
+            r.resolutionStatus,
+            COUNT(r.returnID)                              AS total_returns,
+            ROUND(AVG(r.productRating), 2)                AS avg_product_rating,
+            ROUND(AVG(r.daysBetweenPurchaseAndReturn), 1) AS avg_days_to_return
+          FROM `{project}.{dataset}.returns` r
+          INNER JOIN `{project}.{dataset}.orders` o ON r.orderID = o.orderID
+          WHERE o.orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            AND r.supplierID = '{supplier_id}'
           GROUP BY
-            productSKU, productCategory, buyersRemorseReason, resolutionStatus
+            r.supplierID, r.productSKU, r.productCategory, r.buyersRemorseReason, r.resolutionStatus
           ORDER BY total_returns DESC
+
 
       suppliers:
         allowed_columns:

@@ -1,0 +1,245 @@
+# Supplier BI Agent — Policy Engine Configuration
+# =================================================
+# Defines publish rules per report type.
+# Evaluated deterministically by policy_engine.py — no LLM involved.
+#
+# Three possible outcomes per run:
+#   auto_approve    — all rules pass, report publishes without human review
+#   route_to_queue  — one or more soft rules fail, human review required
+#   escalate        — one or more hard rules fail, escalation required
+#                     (e.g. hallucination detected, critical data mismatch)
+#
+# Rule types:
+#   confidence_min      — minimum confidence score from Analyse node
+#   validation_pass_min — minimum % of semantic validation checks that must pass
+#   hallucination_max   — maximum hallucination flags allowed (0 = zero tolerance)
+#   deviation_max_pct   — maximum % deviation between report figures and BigQuery
+#   required_sections   — report narrative must contain these section headers
+#   improvement_actions_min — minimum number of improvement actions required
+#   actions_must_cite_sku   — every improvement action must reference a SKU or category
+#   errors_max          — maximum pipeline errors allowed for auto-approval
+
+policies:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # WEEKLY BUSINESS OVERVIEW
+  # ════════════════════════════════════════════════════════════════════════════
+
+  weekly_supplier_overview:
+    description: "Weekly portfolio supplier performance — internal leadership"
+    auto_approve_enabled: true
+    rules:
+      - name: confidence_min
+        type: confidence_min
+        threshold: 0.80
+        severity: soft        # fails → route_to_queue
+        message: "Confidence below 0.80 — human review required"
+
+      - name: validation_pass_rate
+        type: validation_pass_min
+        threshold: 0.85       # 85% of validation checks must pass
+        severity: soft
+        message: "Validation pass rate below 85% — human review required"
+
+      - name: no_hallucinations
+        type: hallucination_max
+        threshold: 0           # zero tolerance on auto-approve
+        severity: hard         # fails → escalate
+        message: "Hallucination flag detected — escalation required"
+
+      - name: metric_deviation
+        type: deviation_max_pct
+        threshold: 10.0        # max 10% deviation on key metrics
+        severity: soft
+        message: "Key metric deviation exceeds 10% — human review required"
+
+      - name: required_sections
+        type: required_sections
+        sections:
+          - "Executive Summary"
+          - "Portfolio Performance"
+          - "Supplier Rankings"
+          - "Priority Actions"
+        severity: soft
+        message: "Required report sections missing — human review required"
+
+      - name: minimum_actions
+        type: improvement_actions_min
+        threshold: 3
+        severity: soft
+        message: "Fewer than 3 improvement actions — human review required"
+
+      - name: pipeline_errors
+        type: errors_max
+        threshold: 2
+        severity: soft
+        message: "Pipeline errors exceeded — human review required"
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # MONTHLY BUSINESS OVERVIEW
+  # ════════════════════════════════════════════════════════════════════════════
+
+  monthly_supplier_overview:
+    description: "Monthly portfolio supplier performance — internal leadership"
+    auto_approve_enabled: true
+    rules:
+      - name: confidence_min
+        type: confidence_min
+        threshold: 0.82
+        severity: soft
+        message: "Confidence below 0.82 — human review required"
+
+      - name: validation_pass_rate
+        type: validation_pass_min
+        threshold: 0.85
+        severity: soft
+        message: "Validation pass rate below 85% — human review required"
+
+      - name: no_hallucinations
+        type: hallucination_max
+        threshold: 0
+        severity: hard
+        message: "Hallucination flag detected — escalation required"
+
+      - name: metric_deviation
+        type: deviation_max_pct
+        threshold: 8.0
+        severity: soft
+        message: "Key metric deviation exceeds 8% — human review required"
+
+      - name: required_sections
+        type: required_sections
+        sections:
+          - "Executive Summary"
+          - "Portfolio Performance"
+          - "Supplier Rankings"
+          - "Priority Actions"
+        severity: soft
+        message: "Required report sections missing — human review required"
+
+      - name: minimum_actions
+        type: improvement_actions_min
+        threshold: 4
+        severity: soft
+        message: "Fewer than 4 improvement actions — human review required"
+
+      - name: pipeline_errors
+        type: errors_max
+        threshold: 1
+        severity: soft
+        message: "Pipeline errors exceeded — human review required"
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # MONTHLY SUPPLIER ACCOUNT
+  # ════════════════════════════════════════════════════════════════════════════
+
+  monthly_supplier_account:
+    description: "Monthly per-supplier account report with improvement plan"
+    auto_approve_enabled: true
+    rules:
+      - name: confidence_min
+        type: confidence_min
+        threshold: 0.75        # slightly lower — supplier data is more variable
+        severity: soft
+        message: "Confidence below 0.75 — human review required"
+
+      - name: validation_pass_rate
+        type: validation_pass_min
+        threshold: 0.80
+        severity: soft
+        message: "Validation pass rate below 80% — human review required"
+
+      - name: no_hallucinations
+        type: hallucination_max
+        threshold: 0
+        severity: hard
+        message: "Hallucination flag detected — escalation required before supplier delivery"
+
+      - name: metric_deviation
+        type: deviation_max_pct
+        threshold: 8.0
+        severity: hard         # hard on supplier reports — numbers must be right
+        message: "Key metric deviation exceeds 8% — escalation required"
+
+      - name: required_sections
+        type: required_sections
+        sections:
+          - "Account Summary"
+          - "Performance vs Benchmark"
+          - "Category Performance"
+          - "Improvement Plan"
+        severity: soft
+        message: "Required report sections missing — human review required"
+
+      - name: minimum_actions
+        type: improvement_actions_min
+        threshold: 3
+        severity: soft
+        message: "Fewer than 3 improvement actions — human review required"
+
+      - name: actions_cite_sku
+        type: actions_must_cite_sku
+        severity: soft
+        message: "Improvement actions lack specific SKU or category references — human review required"
+
+      - name: pipeline_errors
+        type: errors_max
+        threshold: 1
+        severity: soft
+        message: "Pipeline errors exceeded — human review required"
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # AD-HOC REPORTS — always require human review
+  # ════════════════════════════════════════════════════════════════════════════
+
+  adhoc_business:
+    description: "Ad-hoc business report — always requires human review"
+    auto_approve_enabled: false   # never auto-approve ad-hoc reports
+    rules:
+      - name: no_hallucinations
+        type: hallucination_max
+        threshold: 0
+        severity: hard
+        message: "Hallucination flag detected — escalation required"
+
+      - name: pipeline_errors
+        type: errors_max
+        threshold: 3
+        severity: soft
+        message: "Multiple pipeline errors — review carefully"
+
+  adhoc_supplier:
+    description: "Ad-hoc supplier report — always requires human review"
+    auto_approve_enabled: false
+    rules:
+      - name: no_hallucinations
+        type: hallucination_max
+        threshold: 0
+        severity: hard
+        message: "Hallucination flag detected — escalation required before supplier delivery"
+
+      - name: metric_deviation
+        type: deviation_max_pct
+        threshold: 5.0
+        severity: hard
+        message: "Metric deviation exceeds 5% on supplier report — escalation required"
+
+      - name: pipeline_errors
+        type: errors_max
+        threshold: 2
+        severity: soft
+        message: "Multiple pipeline errors — review carefully"
+
+
+# ── Global defaults ───────────────────────────────────────────────────────────
+# Applied to any report type not explicitly listed above
+
+defaults:
+  auto_approve_enabled: false
+  confidence_min: 0.80
+  hallucination_max: 0
+  deviation_max_pct: 10.0
+  validation_pass_min: 0.80
