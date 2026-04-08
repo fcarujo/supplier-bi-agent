@@ -237,24 +237,34 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="phase-head" onclick="togglePhase(this)">
         <div class="phase-dot" style="background:#f59e0b"></div>
         <div class="phase-title-wrap">
-          <div class="phase-name">Phase 4 — Control plane &amp; scheduling</div>
-          <div class="phase-timeline">~1–2 weeks · React audit UI · human review gate · automated scheduled reports</div>
+          <div class="phase-name">Phase 4 — Semantic Control Plane</div>
+          <div class="phase-timeline">~2–3 weeks · semantic validation · policy enforcement · observability · React audit UI</div>
         </div>
-        <div class="phase-meta"><div class="phase-count" id="ph-count-3">0 / 8</div><div class="phase-chevron">›</div></div>
+        <div class="phase-meta"><div class="phase-count" id="ph-count-3">0 / 16</div><div class="phase-chevron">›</div></div>
       </div>
       <div class="phase-body">
-        <div class="group-label">Review &amp; publish nodes</div>
+        <div class="group-label">BigQuery control store (3 new tables)</div>
         <ul class="task-list" id="ph-tasks-3">
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Node 5 (Review): LangGraph interrupt with configurable bypass for automated reports above confidence threshold · rejection reason fed back to Pull as retry context</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Node 6 (Publish): write approved report to GCS · write structured output to BigQuery for Looker Studio · emit full audit log to Cloud Logging</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Create agent_runs table: every pipeline execution — report type, audience, supplierID, SQL queries, row counts, confidence, flags, token usage, latency, run status</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Create validation_results table: semantic validation outcomes per run — metric name, expected value, actual value in report, deviation pct, pass/fail, hallucination flag</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Create human_decisions table: every approve/reject/edit — run_id, decision, reviewer, reason, edited_narrative, timestamp · feeds back into retry context</span></li>
+          <div class="group-label">Node 4b — Semantic validation (new node between Generate and Review)</div>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build validate_node: re-query BigQuery directly for key metrics (incident rate, return rate, resolution cost) and compare against figures stated in the report narrative — flag deviations above 5% as potential hallucinations</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Implement improvement action validator: check that every improvement action in the report references a specific SKU or category — reject vague actions with no data anchor</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Write validation results to BigQuery validation_results table · attach validation summary to agent state</span></li>
+          <div class="group-label">Policy engine</div>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build policies.yaml: define publish rules per report type — auto-approve conditions, escalation triggers, rejection criteria (e.g. confidence below threshold, validation failures, missing required sections)</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build policy_engine.py: reads policies.yaml, evaluates agent state + validation results, returns decision: auto_approve / route_to_queue / escalate · no LLM involved — deterministic rule evaluation</span></li>
+          <div class="group-label">Node 5 — Review (LangGraph interrupt)</div>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build review_node: runs policy engine → auto-approves or writes to pending_reports BigQuery queue → LangGraph interrupt waits for human decision · rejection reason + reviewer notes fed back to Generate on retry</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Build Node 6 (Publish): write approved report to GCS + approved_reports BigQuery table + agent_runs status update · emit structured audit log to Cloud Logging</span></li>
           <div class="group-label">React control plane (Cloud Run)</div>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 1 — Run queue: pending reports with type, audience, supplierID, confidence score, timestamp</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 2 — Audit view: report + SQL + data shape + full LangSmith trace side by side</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 3 — Approve / reject / edit interface · rejection note fed back to agent</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 4 — Run history: all past runs, status, token usage, latency, approval outcome</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 1 — Run queue: pending reports with type, audience, supplierID, confidence, policy outcome, validation pass/fail count, timestamp · colour-coded by severity</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 2 — Audit view: report narrative + SQL queries + raw data shape + validation results (expected vs actual metrics) + policy violations · everything side by side</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 3 — Decision interface: approve / reject / edit · rejection reason required · edited narrative diff shown · decision written to human_decisions table</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">View 4 — Observability dashboard: all runs over time · confidence trends · validation pass rates · human decision patterns · token usage · latency · hallucination flag history</span></li>
           <div class="group-label">Scheduled jobs</div>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Weekly business overview: Cloud Scheduler every Monday 08:00 → automated, no review if confidence ≥ 0.85 · publishes to Looker Studio</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Monthly supplier account reports: 1st of month, one run per supplier (20 total) · automated publish to GCS + Looker Studio</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Weekly business overview: Cloud Scheduler every Monday 08:00 → policy engine decides auto-approve or queue · monthly supplier account: 1st of month, one run per supplier</span></li>
         </ul>
         <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-3" style="width:0%;background:#f59e0b"></div></div>
       </div>
@@ -574,8 +584,7 @@ function taskChanged(){
     document.getElementById('ph-count-'+p).textContent=done+' / '+all;
     document.getElementById('ph-bar-'+p).style.width=all?(done/all*100)+'%':'0%';
     cbs.forEach(cb=>cb.closest('.task-item').classList.toggle('done',cb.checked));
-  }
-  const pct=ta?Math.round(td/ta*100):0;
+  }  const pct=ta?Math.round(td/ta*100):0;
   document.getElementById('global-bar').style.width=pct+'%';
   document.getElementById('global-pct').textContent=pct+'%';
   document.getElementById('stat-done').textContent=td;

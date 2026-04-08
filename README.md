@@ -128,7 +128,17 @@ supplier-bi-agent/
 
 ---
 
-## Stack
+## Semantic control plane
+
+Phase 4 implements governance as an active operational layer — not just an approve/reject screen. Four interdependent capabilities:
+
+**Semantic validation** — after Generate, a dedicated validation node re-queries BigQuery directly and compares key metrics stated in the report against ground truth. Deviations above 5% are flagged as potential hallucinations. Improvement actions are checked to ensure they reference specific SKUs or categories — vague actions with no data anchor are rejected.
+
+**Policy engine** — a `policies.yaml` file defines publish rules per report type. A deterministic policy evaluator (no LLM) decides: auto-approve, route to human queue, or escalate. Rules include confidence thresholds, validation pass rates, required section checks, and deviation limits.
+
+**Observability store** — three BigQuery tables capture everything: `agent_runs` (full pipeline trace), `validation_results` (expected vs actual metrics per run), `human_decisions` (every approve/reject/edit with reason). The human decision record feeds back into the agent as retry context.
+
+**React control plane** — four views built on top of the observability store. The audit view surfaces report + SQL + validation results + policy violations side by side. Reviewers see *why* something was flagged, not just *that* it was.
 
 | Layer | Technology | Purpose |
 |---|---|---|
@@ -154,7 +164,7 @@ supplier-bi-agent/
 | 1 — Data layer | ✅ Complete | BigQuery schema, 500k seed, daily append, Cloud Scheduler |
 | 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, LangGraph state, SQL templates, security layer |
 | 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports, SKU improvement plans |
-| 4 — Control plane | 🔄 Next | React audit UI, human review gate, scheduling |
+| 4 — Semantic control plane | 🔄 Next | Validation node, policy engine, observability store, React audit UI |
 | 5 — Looker Studio | ⬜ Planned | Dashboards, hardening, end-to-end test |
 | 6 — Multi-agent | ⬜ Future | Router agent, parallel execution, Vertex AI NLP |
 | 7 — Supplier portal | ⬜ Future | Firebase Auth, supplier-facing React views |
