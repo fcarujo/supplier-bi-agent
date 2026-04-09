@@ -24,22 +24,25 @@ Both report types flow through the same agent pipeline. The audience determines 
 Trigger (Cloud Scheduler / on-demand)
     │
     ▼
-Node 1 — Discover        reads metadata config → selects tables
+Node 1 — Discover        reads metadata config → selects tables (no LLM for scheduled)
     │
     ▼
-Node 2 — Pull            runs SQL → validates → serialises results
+Node 2 — Pull            runs SQL templates → validates → serialises results
     │
     ▼
 Node 3 — Analyse         Python pre-processing → LLM structured JSON analysis
     │
     ▼
-Node 4 — Generate        JSON → dual-audience narrative report               
+Node 4 — Generate        JSON → dual-audience narrative report
     │
     ▼
-Node 5 — Review          LangGraph interrupt → human approval gate            [Phase 4]
+Node 4b — Validate       re-queries BigQuery → compares report vs ground truth
     │
     ▼
-Node 6 — Publish         GCS + BigQuery + Looker Studio                       [Phase 4]
+Node 5 — Review          policy engine → auto-approve / queue / escalate
+    │
+    ▼
+Node 6 — Publish         GCS + BigQuery approved_reports (→ Looker Studio Phase 5)
 ```
 
 State flows through every node as a typed `AgentState` dictionary. Each node reads what it needs and writes its output back to state. Nothing is shared between nodes except through state — no global variables, no side effects.
@@ -103,22 +106,39 @@ Customer comments on incidents and returns were enriched using Claude with produ
 supplier-bi-agent/
 ├── agent/
 │   ├── config/
-│   │   └── metadata.yaml      # report definitions, SQL templates, security config
+│   │   ├── metadata.yaml      # report definitions, SQL templates, security config
+│   │   └── policies.yaml      # publish rules per report type — policy engine input
+│   ├── control/
+│   │   └── policy_engine.py   # deterministic rule evaluator — no LLM
 │   ├── nodes/
 │   │   ├── discover.py        # Node 1 — table selection
 │   │   ├── pull.py            # Node 2 — SQL execution and result serialisation
 │   │   ├── analyse.py         # Node 3 — pre-processing + structured JSON analysis
-│   │   └── generate.py        # Node 4 — dual-audience narrative report generation
-│   └── graph.py               # LangGraph state (AgentState) and graph wiring
+│   │   ├── generate.py        # Node 4 — dual-audience narrative report generation
+│   │   ├── validate.py        # Node 4b — semantic validation vs BigQuery ground truth
+│   │   ├── review.py          # Node 5 — policy engine + route to queue / auto-approve
+│   │   └── publish.py         # Node 6 — GCS + BigQuery approved_reports
+│   └── graph.py               # LangGraph AgentState and full 7-node graph
 ├── data/
 │   ├── seed/
-│   │   ├── setup_bigquery.py  # creates dataset, tables, partitioning, clustering
-│   │   ├── seed_data.py       # generates 500k-row synthetic dataset
-│   │   └── enrich_comments.py # Claude-powered comment enrichment with checkpoint/resume
+│   │   ├── setup_bigquery.py       # creates dataset, tables, partitioning, clustering
+│   │   ├── setup_control_store.py  # creates agent_runs, validation_results, human_decisions, pending_reports
+│   │   ├── seed_data.py            # generates 500k-row synthetic dataset
+│   │   └── enrich_comments.py      # Claude-powered comment enrichment with checkpoint/resume
 │   └── daily_append/
 │       ├── main.py            # Cloud Function — ~250 rows/day
 │       └── requirements.txt
-├── control_plane/             # React audit UI — Phase 4
+├── control_plane/             # Semantic control plane UI
+│   ├── main.py                # FastAPI backend — reads/writes BigQuery
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── frontend/              # React app — deployed to Cloud Run
+│       ├── src/
+│       │   ├── App.jsx        # full control plane UI — queue, audit, decision, observability
+│       │   └── main.jsx
+│       ├── index.html
+│       ├── package.json
+│       └── vite.config.js
 ├── dashboards/                # Looker Studio config — Phase 5
 ├── docs/
 │   └── bi-agent-roadmap.html  # interactive project tracker
@@ -130,15 +150,15 @@ supplier-bi-agent/
 
 ## Semantic control plane
 
-Phase 4 implements governance as an active operational layer — not just an approve/reject screen. Four interdependent capabilities:
+Phase 4 implements governance as an active operational layer across four interdependent components:
 
-**Semantic validation** — after Generate, a dedicated validation node re-queries BigQuery directly and compares key metrics stated in the report against ground truth. Deviations above 5% are flagged as potential hallucinations. Improvement actions are checked to ensure they reference specific SKUs or categories — vague actions with no data anchor are rejected.
+**Semantic validation (Node 4b)** — after Generate, re-queries BigQuery directly and compares key metrics stated in the report against ground truth. Incidents and returns are joined to orders on `orderID` so resolution costs always align with the same order window as revenue. Deviations above 10% are flagged, above 20% are hallucination candidates. Improvement actions are checked to ensure they reference specific SKUs or categories.
 
-**Policy engine** — a `policies.yaml` file defines publish rules per report type. A deterministic policy evaluator (no LLM) decides: auto-approve, route to human queue, or escalate. Rules include confidence thresholds, validation pass rates, required section checks, and deviation limits.
+**Policy engine** — `policies.yaml` defines publish rules per report type. A deterministic evaluator (no LLM) produces one of three decisions: `auto_approve`, `route_to_queue`, or `escalate`. Rules cover confidence threshold, validation pass rate, zero hallucination tolerance, metric deviation limits, required report sections, minimum improvement actions, and SKU citation requirements. Soft rule failures route to queue, hard failures escalate.
 
-**Observability store** — three BigQuery tables capture everything: `agent_runs` (full pipeline trace), `validation_results` (expected vs actual metrics per run), `human_decisions` (every approve/reject/edit with reason). The human decision record feeds back into the agent as retry context.
+**Observability store** — four BigQuery tables: `agent_runs` (full pipeline trace per execution), `validation_results` (expected vs actual metrics), `human_decisions` (every approve/reject/edit with reviewer and reason), `pending_reports` (review queue). Human decisions feed back into retry context.
 
-**React control plane** — four views built on top of the observability store. The audit view surfaces report + SQL + validation results + policy violations side by side. Reviewers see *why* something was flagged, not just *that* it was.
+**React control plane** — FastAPI backend + React frontend deployed to Cloud Run. Four views: run queue with confidence and validation status, audit view with report + validation results + policy rules + raw SQL side by side, decision interface (approve / edit and approve / reject with required reason), and observability dashboard with run history and confidence trends. Accessed securely via `gcloud run services proxy`.
 
 | Layer | Technology | Purpose |
 |---|---|---|
@@ -164,8 +184,8 @@ Phase 4 implements governance as an active operational layer — not just an app
 | 1 — Data layer | ✅ Complete | BigQuery schema, 500k seed, daily append, Cloud Scheduler |
 | 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, LangGraph state, SQL templates, security layer |
 | 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports, SKU improvement plans |
-| 4 — Semantic control plane | 🔄 Next | Validation node, policy engine, observability store, React audit UI |
-| 5 — Looker Studio | ⬜ Planned | Dashboards, hardening, end-to-end test |
+| 4 — Semantic control plane | ✅ Complete | Validation node, policy engine, observability store, React UI on Cloud Run |
+| 5 — Looker Studio | 🔄 Next | Dashboards, hardening, end-to-end test |
 | 6 — Multi-agent | ⬜ Future | Router agent, parallel execution, Vertex AI NLP |
 | 7 — Supplier portal | ⬜ Future | Firebase Auth, supplier-facing React views |
 
