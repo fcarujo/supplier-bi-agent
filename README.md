@@ -185,7 +185,7 @@ Phase 4 implements governance as an active operational layer across four interde
 | 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, LangGraph state, SQL templates, security layer |
 | 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports, SKU improvement plans |
 | 4 — Semantic control plane | ✅ Complete | Validation node, policy engine, observability store, React UI on Cloud Run |
-| 5 — Reporting & ad-hoc | 🔄 Next | Looker Studio dashboards · ad-hoc report trigger · natural language BI |
+| 5 — Reporting & ad-hoc | 🔄 Next | React dashboards (internal + supplier-facing) · ad-hoc trigger · NL BI |
 | 6 — Multi-agent | ⬜ Future | Router agent, specialised agents, parallel execution, Vertex AI NLP |
 | 7 — Supplier portal | ⬜ Future | Firebase Auth, supplier-facing React views, row-level security |
 
