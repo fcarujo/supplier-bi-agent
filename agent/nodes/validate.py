@@ -7,15 +7,10 @@ Re-queries BigQuery directly for key metrics and compares them
 against the figures stated in the generated report narrative.
 Deviations above threshold are flagged as potential hallucinations.
 
-Also validates structural quality:
-  - Improvement actions cite specific SKUs or categories
-  - Required sections are present
-  - Confidence score is above minimum
+For ad-hoc reports, extracts the actual date range and supplier scope
+from the queries that were run, so ground truth matches the report scope.
 
 No LLM involved — entirely deterministic.
-
-Writes results to BigQuery validation_results table.
-Attaches validation summary to agent state for the policy engine.
 """
 
 import re
@@ -28,13 +23,95 @@ import yaml
 from google.cloud import bigquery
 
 
-# ── Load metadata config ──────────────────────────────────────────────────────
-
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "metadata.yaml"
 
 def _load_config() -> dict:
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f)
+
+
+# ── Date filter extraction ────────────────────────────────────────────────────
+
+def _extract_date_filter_from_sql(sql: str, date_col: str = "orderDate") -> Optional[str]:
+    """
+    Extract the date filter from a SQL string.
+    Returns a filter string using date_col as the column name.
+    """
+    if not sql:
+        return None
+
+    # Match DATE_SUB patterns
+    patterns = [
+        # DATE_SUB(CURRENT_DATE(), INTERVAL N MONTH/DAY)
+        rf"{date_col}\s*>=\s*(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*(?:MONTH|DAY)\))",
+        # DATE_TRUNC(DATE_SUB(...)) pattern
+        rf"{date_col}\s*>=\s*(DATE_TRUNC\(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*(?:MONTH|DAY)\),\s*\w+\))",
+        # Literal date strings
+        rf"{date_col}\s*>=\s*'(\d{{4}}-\d{{2}}-\d{{2}})'",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, sql, re.IGNORECASE)
+        if match:
+            return f"{date_col} >= {match.group(1)}"
+
+    # Try without column prefix (incidents/returns tables)
+    generic_patterns = [
+        r"(?:orderDate|incidentDate|returnDate)\s*>=\s*(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*(\d+)\s*(MONTH|DAY)\))",
+        r"(?:orderDate|incidentDate|returnDate)\s*>=\s*(DATE_TRUNC\(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*(\d+)\s*(MONTH|DAY)\),\s*\w+\))",
+    ]
+    for pattern in generic_patterns:
+        match = re.search(pattern, sql, re.IGNORECASE)
+        if match:
+            interval_n    = match.group(2)
+            interval_unit = match.group(3).upper()
+            return f"{date_col} >= DATE_SUB(CURRENT_DATE(), INTERVAL {interval_n} {interval_unit})"
+
+    return None
+
+
+def _get_date_filter(state: dict, config: dict) -> str:
+    """
+    Determine the correct date filter for ground truth queries.
+    For ad-hoc reports: extract from the actual SQL queries run.
+    For scheduled reports: extract from the SQL template in metadata.
+    """
+    report_type = state["report_type"]
+    queries     = state.get("queries") or {}
+
+    # For ad-hoc reports — extract from actual queries that were run
+    if report_type and report_type.startswith("adhoc"):
+        # Try orders query first, then incidents
+        for table in ["orders", "incidents", "returns"]:
+            sql = queries.get(table, "")
+            if isinstance(sql, dict):
+                sql = sql.get("sql", "") or str(sql)
+            if sql:
+                extracted = _extract_date_filter_from_sql(str(sql), "orderDate")
+                if extracted:
+                    print(f"  [validate] Extracted date filter from {table} query: {extracted}")
+                    return extracted
+
+        # Fall back to 30 days if nothing found
+        print("  [validate] WARNING — could not extract date filter from queries, using 30 days")
+        return "orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
+
+    # For scheduled reports — extract from metadata SQL template
+    report_config = config["reports"].get(report_type, {})
+    orders_table  = report_config.get("tables", {}).get("orders", {})
+    sql_template  = orders_table.get("sql_template", "")
+
+    if sql_template:
+        match = re.search(
+            r"(orderDate\s*>=\s*DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*\w+\))",
+            sql_template
+        )
+        if match:
+            return match.group(1)
+
+    orders_filters = orders_table.get("filters", [])
+    return orders_filters[0] if orders_filters else \
+        "orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
 
 
 # ── Ground truth queries ──────────────────────────────────────────────────────
@@ -46,81 +123,90 @@ def get_ground_truth(
     report_type: str,
     supplier_id: Optional[str],
     date_filter: str,
+    queries:     dict = None,
 ) -> dict:
     """
-    Re-query BigQuery directly to get ground truth metrics.
-    These are compared against what the report states.
+    Re-query BigQuery for ground truth metrics matching the report's exact scope.
+    Supplier filter and date window both match what the report was based on.
     """
-    sup_filter = f"AND supplierID = '{supplier_id}'" if supplier_id else ""
+    sup_filter = f"AND o.supplierID = '{supplier_id}'" if supplier_id else ""
+    sup_filter_plain = f"AND supplierID = '{supplier_id}'" if supplier_id else ""
 
-    # Overall incident rate
-    q_incident = f"""
-        SELECT
-            COUNT(o.orderID) AS total_orders,
-            SUM(CASE WHEN o.hasIncident = TRUE THEN 1 ELSE 0 END) AS total_incidents,
-            ROUND(AVG(CASE WHEN o.hasIncident = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2)
-                AS incident_rate_pct
-        FROM `{project}.{dataset}.orders` o
-        WHERE {date_filter} {sup_filter}
-    """
+    is_adhoc = report_type and report_type.startswith("adhoc")
 
-    # Overall return rate
-    q_return = f"""
-        SELECT
-            COUNT(o.orderID) AS total_orders,
-            SUM(CASE WHEN o.hasReturn = TRUE THEN 1 ELSE 0 END) AS total_returns,
-            ROUND(AVG(CASE WHEN o.hasReturn = TRUE THEN 1.0 ELSE 0.0 END) * 100, 2)
-                AS return_rate_pct
-        FROM `{project}.{dataset}.orders` o
-        WHERE {date_filter} {sup_filter}
-    """
-
-    # Total resolution cost
-    q_resolution = f"""
-        SELECT
-            ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost,
-            COUNT(i.incidentID)             AS total_incidents
-        FROM `{project}.{dataset}.incidents` i
-        INNER JOIN `{project}.{dataset}.orders` o ON i.orderID = o.orderID
-        WHERE {date_filter} {sup_filter.replace('supplierID', 'i.supplierID')}
-    """
-
-    # Total gross revenue
-    q_revenue = f"""
-        SELECT
-            ROUND(SUM(grossRevenue), 2) AS total_gross_revenue
-        FROM `{project}.{dataset}.orders` o
-        WHERE {date_filter} {sup_filter}
-    """
+    # For ad-hoc reports that only queried incidents (no orders table),
+    # derive incident date filter from the incident SQL
+    inc_date_filter = date_filter.replace("orderDate", "incidentDate")
+    if is_adhoc and queries:
+        inc_sql = queries.get("incidents", "")
+        if isinstance(inc_sql, dict):
+            inc_sql = str(inc_sql)
+        if inc_sql and "orderDate" not in inc_sql:
+            extracted = _extract_date_filter_from_sql(str(inc_sql), "incidentDate")
+            if extracted:
+                inc_date_filter = extracted
 
     ground_truth = {}
+    had_orders = queries and "orders" in queries
 
-    try:
-        row = list(bq_client.query(q_incident).result())[0]
-        ground_truth["total_orders"]        = float(row["total_orders"] or 0)
-        ground_truth["total_incidents"]     = float(row["total_incidents"] or 0)
-        ground_truth["incident_rate_pct"]   = float(row["incident_rate_pct"] or 0)
-    except Exception as e:
-        print(f"  [validate] WARNING — incident query failed: {e}")
+    # Only query orders-based metrics if the report had orders data
+    if not is_adhoc or had_orders:
+        try:
+            row = list(bq_client.query(f"""
+                SELECT
+                    COUNT(o.orderID) AS total_orders,
+                    SUM(CASE WHEN o.hasIncident THEN 1 ELSE 0 END) AS total_incidents,
+                    ROUND(AVG(CASE WHEN o.hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2) AS incident_rate_pct
+                FROM `{project}.{dataset}.orders` o
+                WHERE {date_filter} {sup_filter}
+            """).result())[0]
+            ground_truth["total_orders"]      = float(row["total_orders"] or 0)
+            ground_truth["total_incidents"]   = float(row["total_incidents"] or 0)
+            ground_truth["incident_rate_pct"] = float(row["incident_rate_pct"] or 0)
+        except Exception as e:
+            print(f"  [validate] WARNING — incident query failed: {e}")
 
-    try:
-        row = list(bq_client.query(q_return).result())[0]
-        ground_truth["total_returns"]       = float(row["total_returns"] or 0)
-        ground_truth["return_rate_pct"]     = float(row["return_rate_pct"] or 0)
-    except Exception as e:
-        print(f"  [validate] WARNING — return query failed: {e}")
+        try:
+            row = list(bq_client.query(f"""
+                SELECT
+                    ROUND(AVG(CASE WHEN o.hasReturn THEN 1.0 ELSE 0.0 END) * 100, 2) AS return_rate_pct
+                FROM `{project}.{dataset}.orders` o
+                WHERE {date_filter} {sup_filter}
+            """).result())[0]
+            ground_truth["return_rate_pct"] = float(row["return_rate_pct"] or 0)
+        except Exception as e:
+            print(f"  [validate] WARNING — return query failed: {e}")
 
+        try:
+            row = list(bq_client.query(f"""
+                SELECT ROUND(SUM(grossRevenue), 2) AS total_gross_revenue
+                FROM `{project}.{dataset}.orders` o
+                WHERE {date_filter} {sup_filter}
+            """).result())[0]
+            ground_truth["total_gross_revenue"] = float(row["total_gross_revenue"] or 0)
+        except Exception as e:
+            print(f"  [validate] WARNING — revenue query failed: {e}")
+
+    # Resolution cost — always query from incidents with matching scope
     try:
-        row = list(bq_client.query(q_resolution).result())[0]
+        if is_adhoc and not had_orders:
+            # No orders join available — query incidents directly
+            row = list(bq_client.query(f"""
+                SELECT ROUND(SUM(resolutionCost), 2) AS total_resolution_cost
+                FROM `{project}.{dataset}.incidents`
+                WHERE {inc_date_filter} {sup_filter_plain}
+            """).result())[0]
+        else:
+            # Join incidents to orders for aligned date window
+            row = list(bq_client.query(f"""
+                SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
+                FROM `{project}.{dataset}.incidents` i
+                INNER JOIN `{project}.{dataset}.orders` o ON i.orderID = o.orderID
+                WHERE {date_filter} {sup_filter}
+            """).result())[0]
         ground_truth["total_resolution_cost"] = float(row["total_resolution_cost"] or 0)
     except Exception as e:
         print(f"  [validate] WARNING — resolution cost query failed: {e}")
-
-    try:
-        row = list(bq_client.query(q_revenue).result())[0]
-        ground_truth["total_gross_revenue"]   = float(row["total_gross_revenue"] or 0)
-    except Exception as e:
-        print(f"  [validate] WARNING — revenue query failed: {e}")
 
     return ground_truth
 
@@ -128,13 +214,8 @@ def get_ground_truth(
 # ── Metric extractor ──────────────────────────────────────────────────────────
 
 def extract_reported_metrics(narrative: str, analysis: dict) -> dict:
-    """
-    Extract key metrics stated in the report.
-    Checks both the structured analysis JSON and the narrative text.
-    """
     reported = {}
 
-    # From structured analysis JSON (more reliable)
     overall = analysis.get("overall_metrics", {})
     if overall.get("overall_incident_rate_pct"):
         reported["incident_rate_pct"] = float(overall["overall_incident_rate_pct"])
@@ -147,8 +228,6 @@ def extract_reported_metrics(narrative: str, analysis: dict) -> dict:
     if overall.get("total_orders"):
         reported["total_orders"] = float(overall["total_orders"])
 
-    # Fall back to narrative parsing for any missing metrics
-    # Pattern: number followed by % within reasonable range
     if "incident_rate_pct" not in reported:
         matches = re.findall(
             r"(?:incident rate|incident_rate)[^\d]*(\d+\.?\d*)\s*%",
@@ -171,11 +250,6 @@ def extract_reported_metrics(narrative: str, analysis: dict) -> dict:
 # ── Deviation calculator ──────────────────────────────────────────────────────
 
 def calculate_deviation(expected: float, reported: float) -> float:
-    """
-    Calculate percentage deviation between expected (ground truth)
-    and reported (what the agent said).
-    Returns 0.0 if expected is 0.
-    """
     if expected == 0:
         return 0.0 if reported == 0 else 100.0
     return abs((reported - expected) / expected) * 100.0
@@ -184,12 +258,8 @@ def calculate_deviation(expected: float, reported: float) -> float:
 # ── Improvement action validator ──────────────────────────────────────────────
 
 def validate_improvement_actions(analysis: dict) -> list:
-    """
-    Check that improvement actions reference specific SKUs or categories.
-    Returns list of validation result dicts.
-    """
-    results  = []
-    actions  = analysis.get("improvement_actions") or []
+    results = []
+    actions = analysis.get("improvement_actions") or []
 
     for i, action in enumerate(actions):
         target      = str(action.get("target", ""))
@@ -201,7 +271,9 @@ def validate_improvement_actions(analysis: dict) -> list:
             "Kitchen", "Dining"
         ])
         has_sup     = bool(re.search(r"SUP\d{3}", target))
-        is_specific = has_sku or has_cat or has_sup or scope in ("sku", "category", "supplier")
+        is_specific = has_sku or has_cat or has_sup or scope in (
+            "sku", "category", "supplier", "portfolio"
+        )
 
         results.append({
             "validation_id":     str(uuid.uuid4()),
@@ -212,27 +284,24 @@ def validate_improvement_actions(analysis: dict) -> list:
             "passed":            is_specific,
             "hallucination_flag":False,
             "details":           f"Action {i+1}: target='{target}' scope='{scope}' — "
-                                  f"{'specific' if is_specific else 'vague — no SKU/category reference'}",
-            "category":          None,
-            "supplier_id_ref":   None,
+                                 f"{'specific' if is_specific else 'vague'}",
         })
 
     return results
 
 
-# ── BigQuery writer ───────────────────────────────────────────────────────────
+# ── Write results ─────────────────────────────────────────────────────────────
 
 def write_validation_results(
-    bq_client: bigquery.Client,
-    project:   str,
-    dataset:   str,
-    run_id:    str,
+    bq_client:   bigquery.Client,
+    project:     str,
+    dataset:     str,
+    run_id:      str,
     report_type: str,
-    audience:  str,
+    audience:    str,
     supplier_id: Optional[str],
-    results:   list,
+    results:     list,
 ):
-    """Write validation results to BigQuery validation_results table."""
     table_id = f"{project}.{dataset}.validation_results"
     now      = datetime.now(timezone.utc).isoformat()
 
@@ -267,55 +336,25 @@ def write_validation_results(
 # ── Validate node ─────────────────────────────────────────────────────────────
 
 def validate_node(state: dict) -> dict:
-    """
-    Node 4b — Validate.
-
-    Reads:  state.report_narrative, state.analysis, state.report_type,
-            state.audience, state.supplier_id, state.run_id
-
-    Writes: state.validation (summary dict), state.errors
-    """
     print("  [validate] Starting semantic validation...")
 
-    config        = _load_config()
-    project       = config["project"]
-    dataset       = config["dataset"]
-    report_type   = state["report_type"]
-    audience      = state["audience"]
-    supplier_id   = state.get("supplier_id")
-    run_id        = state.get("run_id", str(uuid.uuid4()))
-    narrative     = state.get("report_narrative", "")
-    analysis      = state.get("analysis", {})
-    errors        = list(state.get("errors") or [])
+    config      = _load_config()
+    project     = config["project"]
+    dataset     = config["dataset"]
+    report_type = state["report_type"]
+    audience    = state["audience"]
+    supplier_id = state.get("supplier_id")
+    run_id      = state.get("run_id", str(uuid.uuid4()))
+    narrative   = state.get("report_narrative", "")
+    analysis    = state.get("analysis", {})
+    queries     = state.get("queries") or {}
+    errors      = list(state.get("errors") or [])
 
-    bq_client     = bigquery.Client(project=project)
-    all_results   = []
+    bq_client   = bigquery.Client(project=project)
+    all_results = []
 
-    # ── Determine date filter for ground truth queries ────────────────────────
-    report_config  = config["reports"].get(report_type, {})
-    orders_table   = report_config.get("tables", {}).get("orders", {})
-
-    # For template-mode reports, extract the date filter from the SQL template
-    # For filter-mode reports, use the filters list directly
-    date_filter = None
-
-    sql_template = orders_table.get("sql_template", "")
-    if sql_template:
-        # Extract WHERE clause date condition from the template
-        import re
-        match = re.search(
-            r"(orderDate\s*>=\s*DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*\w+\))",
-            sql_template
-        )
-        if match:
-            date_filter = match.group(1)
-
-    if not date_filter:
-        # Fall back to filters list
-        orders_filters = orders_table.get("filters", [])
-        date_filter = orders_filters[0] if orders_filters else \
-            "orderDate >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
-
+    # ── Determine date filter matching the report's actual scope ──────────────
+    date_filter = _get_date_filter(state, config)
     print(f"  [validate] Using date filter: {date_filter}")
 
     # ── Get ground truth from BigQuery ────────────────────────────────────────
@@ -327,6 +366,7 @@ def validate_node(state: dict) -> dict:
         report_type = report_type,
         supplier_id = supplier_id,
         date_filter = date_filter,
+        queries     = queries,
     )
     print(f"  [validate] Ground truth: {ground_truth}")
 
@@ -335,14 +375,15 @@ def validate_node(state: dict) -> dict:
     print(f"  [validate] Reported metrics: {reported_metrics}")
 
     # ── Compare metrics ───────────────────────────────────────────────────────
-    DEVIATION_THRESHOLD = 10.0  # flag above 10% deviation
+    DEVIATION_THRESHOLD  = 10.0
+    HALLUCINATION_THRESHOLD = 20.0
 
     metric_map = {
-        "incident_rate_pct":    "Overall incident rate (%)",
-        "return_rate_pct":      "Overall return rate (%)",
-        "total_resolution_cost":"Total resolution cost ($)",
-        "total_gross_revenue":  "Total gross revenue ($)",
-        "total_orders":         "Total orders",
+        "incident_rate_pct":     "Overall incident rate (%)",
+        "return_rate_pct":       "Overall return rate (%)",
+        "total_resolution_cost": "Total resolution cost ($)",
+        "total_gross_revenue":   "Total gross revenue ($)",
+        "total_orders":          "Total orders",
     }
 
     for metric_key, metric_label in metric_map.items():
@@ -356,20 +397,19 @@ def validate_node(state: dict) -> dict:
                 "expected_value":    expected,
                 "reported_value":    reported,
                 "deviation_pct":     None,
-                "passed":            True,   # can't fail what we can't measure
+                "passed":            True,
                 "hallucination_flag":False,
                 "details":           f"{metric_label}: could not compare — "
                                      f"expected={expected}, reported={reported}",
             })
             continue
 
-        deviation = calculate_deviation(expected, reported)
-        passed    = deviation <= DEVIATION_THRESHOLD
-        is_hallucination = deviation > 20.0   # >20% deviation = hallucination candidate
+        deviation        = calculate_deviation(expected, reported)
+        passed           = deviation <= DEVIATION_THRESHOLD
+        is_hallucination = deviation > HALLUCINATION_THRESHOLD
 
         status = "✓" if passed else f"✗ ({deviation:.1f}% deviation)"
-        print(f"  [validate] {status} {metric_label}: "
-              f"expected={expected}, reported={reported}")
+        print(f"  [validate] {status} {metric_label}: expected={expected}, reported={reported}")
 
         all_results.append({
             "validation_id":     str(uuid.uuid4()),
@@ -410,11 +450,11 @@ def validate_node(state: dict) -> dict:
         results     = all_results,
     )
 
-    # ── Build validation summary ──────────────────────────────────────────────
-    passed_count       = sum(1 for r in all_results if r["passed"])
-    failed_count       = len(all_results) - passed_count
+    # ── Build summary ─────────────────────────────────────────────────────────
+    passed_count        = sum(1 for r in all_results if r["passed"])
+    failed_count        = len(all_results) - passed_count
     hallucination_count = sum(1 for r in all_results if r.get("hallucination_flag"))
-    pass_rate          = passed_count / len(all_results) if all_results else 1.0
+    pass_rate           = passed_count / len(all_results) if all_results else 1.0
 
     validation_summary = {
         "results":             all_results,

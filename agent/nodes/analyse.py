@@ -45,12 +45,89 @@ def preprocess_results(
     supplier_id:   Optional[str],
     project:       str,
     dataset:       str,
+    report_type:   str = None,
 ) -> dict:
     """
     Join and aggregate multi-table query results into a coherent
     data summary ready for the LLM. Pure Python — no LLM calls.
     Slims to top-N items before returning to keep LLM context manageable.
+
+    For ad-hoc reports, detects free-form SQL and passes raw data
+    directly to the LLM without trying to aggregate into a fixed schema.
     """
+
+    # ── Ad-hoc detection ─────────────────────────────────────────────────────
+    # Ad-hoc SQL can have any shape — period comparisons, custom groupings, etc.
+    # Detect by checking if the orders rows have non-standard columns.
+    orders_sample = query_results.get("orders", [{}])
+    first_row     = orders_sample[0] if orders_sample else {}
+    standard_cols = {"supplierID", "supplierTier", "supplierRegion", "productCategory",
+                     "fulfilmentChannel", "productPriceTier", "total_orders",
+                     "total_units", "total_gross_revenue", "total_net_revenue",
+                     "total_incidents", "incident_rate_pct", "total_returns", "return_rate_pct"}
+    is_adhoc = (
+        (report_type and report_type.startswith("adhoc")) or
+        bool(set(first_row.keys()) - standard_cols - {"productSKU", "total_product_cost"})
+    )
+
+    if is_adhoc:
+        # Compute basic totals from whatever columns are available
+        def _sum(rows, *keys):
+            for k in keys:
+                total = sum(r.get(k, 0) or 0 for r in rows)
+                if total > 0:
+                    return total
+            return 0
+
+        orders    = query_results.get("orders", [])
+        incidents = query_results.get("incidents", [])
+        returns   = query_results.get("returns", [])
+        suppliers = query_results.get("suppliers", [])
+
+        total_orders    = _sum(orders, "totalOrders", "total_orders")
+        total_incidents = _sum(orders, "totalIncidents", "total_incidents")
+        total_returns   = _sum(orders, "totalReturns", "total_returns")
+        total_revenue   = _sum(orders, "totalGrossRevenue", "total_gross_revenue")
+
+        # If orders has period breakdown, compute per-period totals
+        periods = {}
+        for row in orders:
+            period = row.get("timePeriod") or row.get("period") or "All"
+            if period not in periods:
+                periods[period] = {"total_orders": 0, "total_incidents": 0,
+                                   "total_returns": 0, "total_gross_revenue": 0}
+            p = periods[period]
+            p["total_orders"]       += row.get("totalOrders",       row.get("total_orders", 0)) or 0
+            p["total_incidents"]    += row.get("totalIncidents",     row.get("total_incidents", 0)) or 0
+            p["total_returns"]      += row.get("totalReturns",       row.get("total_returns", 0)) or 0
+            p["total_gross_revenue"]+= row.get("totalGrossRevenue",  row.get("total_gross_revenue", 0)) or 0
+
+        for p_data in periods.values():
+            n = p_data["total_orders"]
+            p_data["incident_rate_pct"] = round(p_data["total_incidents"] / n * 100, 2) if n else 0
+            p_data["return_rate_pct"]   = round(p_data["total_returns"]   / n * 100, 2) if n else 0
+
+        return {
+            "audience":         audience,
+            "supplier_id":      supplier_id,
+            "tables_available": list(query_results.keys()),
+            "is_adhoc":         True,
+            "suppliers":        {s["supplierID"]: s for s in suppliers},
+            "overall": {
+                "total_orders":              total_orders,
+                "total_gross_revenue":       round(total_revenue, 2),
+                "total_incidents":           total_incidents,
+                "total_returns":             total_returns,
+                "overall_incident_rate_pct": round(total_incidents / total_orders * 100, 2) if total_orders else 0,
+                "overall_return_rate_pct":   round(total_returns   / total_orders * 100, 2) if total_orders else 0,
+            },
+            "by_period":   periods,
+            "raw_orders":  orders[:200],
+            "raw_incidents": incidents[:200],
+            "raw_returns": returns[:200],
+        }
+
+    # ── Standard scheduled report processing ─────────────────────────────────
     summary = {
         "audience":         audience,
         "supplier_id":      supplier_id,
@@ -169,7 +246,6 @@ def preprocess_results(
         total_resolution_cost = sum(r.get("total_resolution_cost", 0) or 0 for r in incidents)
         total_inc_count       = sum(r.get("total_incidents", 0) or 0 for r in incidents)
 
-        # Incident type breakdown — aggregate across all rows
         type_agg = {}
         for row in incidents:
             t = row.get("incidentType")
@@ -180,7 +256,6 @@ def preprocess_results(
             type_agg[t]["count"]      += row.get("total_incidents", 0) or 0
             type_agg[t]["total_cost"] += row.get("total_resolution_cost", 0) or 0
 
-        # Use overall incident count from orders for rate calculation
         total_for_pct = summary.get("overall", {}).get("total_incidents", total_inc_count)
         for t, agg in type_agg.items():
             agg["pct_of_total"] = round(
@@ -188,7 +263,6 @@ def preprocess_results(
             ) if total_for_pct else 0
             agg["total_cost"] = round(agg["total_cost"], 2)
 
-        # Resolution type breakdown
         resolution_agg = {}
         for row in incidents:
             r = row.get("incidentResolution")
@@ -205,7 +279,6 @@ def preprocess_results(
             ) if total_for_pct else 0
             agg["total_cost"] = round(agg["total_cost"], 2)
 
-        # Per-SKU incident breakdown (supplier account mode)
         sku_incident_agg = {}
         for row in incidents:
             sku = row.get("productSKU")
@@ -263,7 +336,6 @@ def preprocess_results(
                 sum(ratings) / len(ratings), 2
             ) if ratings else None
 
-        # Per-SKU return breakdown
         sku_return_agg = {}
         for row in returns:
             sku = row.get("productSKU")
@@ -290,8 +362,6 @@ def preprocess_results(
         }
 
     # ── Slim summary for LLM context ─────────────────────────────────────────
-    # Send top-N only — LLM doesn't need every combination
-
     if "by_supplier" in summary:
         suppliers_list = sorted(
             summary["by_supplier"].values(),
@@ -317,6 +387,7 @@ def preprocess_results(
         summary["returns"]["by_sku"] = skus
 
     return summary
+
 
 
 # ── Guardrail check ───────────────────────────────────────────────────────────
@@ -553,6 +624,7 @@ def analyse_node(state: dict) -> dict:
         supplier_id   = supplier_id,
         project       = project,
         dataset       = dataset,
+        report_type   = report_type,
     )
 
     total_orders = summary.get("overall", {}).get("total_orders", 0)

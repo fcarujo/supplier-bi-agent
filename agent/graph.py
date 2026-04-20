@@ -4,22 +4,17 @@ Supplier BI Agent — LangGraph Graph
 Full pipeline — all 7 nodes wired.
 
   discover → pull → analyse → generate → validate → review → publish
-
-Phase 4 additions:
-  - validate_node: semantic validation against BigQuery ground truth
-  - review_node: policy engine → auto_approve / queue / escalate
-  - publish_node: GCS + BigQuery approved_reports + agent_runs update
-
-AgentState extended with:
-  - validation: semantic validation summary
-  - policy_outcome: policy engine decision and rule results
-  - gcs_path: published report location
 """
 
+import json
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from typing_extensions import TypedDict
 
+import yaml
+from google.cloud import bigquery
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -35,57 +30,39 @@ from agent.nodes.publish   import publish_node
 # ── Agent state ───────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
-    # Input
-    report_type:    str
-    audience:       str
-    supplier_id:    Optional[str]
-    date_from:      Optional[str]
-    date_to:        Optional[str]
-    goal:           str
-
-    # Discover output
+    report_type:          str
+    audience:             str
+    supplier_id:          Optional[str]
+    date_from:            Optional[str]
+    date_to:              Optional[str]
+    goal:                 str
     selected_tables:      Optional[list]
     table_schemas:        Optional[dict]
     discover_reasoning:   Optional[str]
-
-    # Pull output
-    queries:          Optional[dict]
-    query_results:    Optional[dict]
-    row_counts:       Optional[dict]
-    pull_validation:  Optional[dict]
-
-    # Analyse output
-    analysis:         Optional[dict]
-    confidence:       Optional[float]
-    flags:            Optional[list]
-
-    # Generate output
-    report_narrative: Optional[str]
-    report_json:      Optional[dict]
-
-    # Validate output (Phase 4)
-    validation:       Optional[dict]
-
-    # Review output (Phase 4)
-    approved:         Optional[bool]
-    reviewer:         Optional[str]
-    review_notes:     Optional[str]
-    approved_at:      Optional[str]
-    policy_outcome:   Optional[dict]
-
-    # Publish output (Phase 4)
-    gcs_path:         Optional[str]
-
-    # Pipeline metadata
-    run_id:           Optional[str]
-    errors:           Optional[list]
-    current_node:     Optional[str]
+    queries:              Optional[dict]
+    query_results:        Optional[dict]
+    row_counts:           Optional[dict]
+    pull_validation:      Optional[dict]
+    analysis:             Optional[dict]
+    confidence:           Optional[float]
+    flags:                Optional[list]
+    report_narrative:     Optional[str]
+    report_json:          Optional[dict]
+    validation:           Optional[dict]
+    approved:             Optional[bool]
+    reviewer:             Optional[str]
+    review_notes:         Optional[str]
+    approved_at:          Optional[str]
+    policy_outcome:       Optional[dict]
+    gcs_path:             Optional[str]
+    run_id:               Optional[str]
+    errors:               Optional[list]
+    current_node:         Optional[str]
 
 
-# ── Conditional edge — skip publish if not approved ───────────────────────────
+# ── Conditional edge ──────────────────────────────────────────────────────────
 
 def should_publish(state: AgentState) -> str:
-    """Only proceed to publish if the report was approved."""
     if state.get("approved"):
         return "publish"
     return END
@@ -96,22 +73,21 @@ def should_publish(state: AgentState) -> str:
 def build_graph():
     graph = StateGraph(AgentState)
 
-    graph.add_node("discover",  discover_node)
-    graph.add_node("pull",      pull_node)
-    graph.add_node("analyse",   analyse_node)
-    graph.add_node("generate",  generate_node)
-    graph.add_node("validate",  validate_node)
-    graph.add_node("review",    review_node)
-    graph.add_node("publish",   publish_node)
+    graph.add_node("discover", discover_node)
+    graph.add_node("pull",     pull_node)
+    graph.add_node("analyse",  analyse_node)
+    graph.add_node("generate", generate_node)
+    graph.add_node("validate", validate_node)
+    graph.add_node("review",   review_node)
+    graph.add_node("publish",  publish_node)
 
     graph.set_entry_point("discover")
-    graph.add_edge("discover",  "pull")
-    graph.add_edge("pull",      "analyse")
-    graph.add_edge("analyse",   "generate")
-    graph.add_edge("generate",  "validate")
-    graph.add_edge("validate",  "review")
+    graph.add_edge("discover", "pull")
+    graph.add_edge("pull",     "analyse")
+    graph.add_edge("analyse",  "generate")
+    graph.add_edge("generate", "validate")
+    graph.add_edge("validate", "review")
 
-    # Conditional edge — only publish if approved
     graph.add_conditional_edges(
         "review",
         should_publish,
@@ -128,15 +104,53 @@ def build_graph():
 def run_agent(
     report_type: str,
     goal:        str,
-    audience:    str  = "business",
-    supplier_id: str  = None,
-    date_from:   str  = None,
-    date_to:     str  = None,
-    thread_id:   str  = None,
+    audience:    str = "business",
+    supplier_id: str = None,
+    date_from:   str = None,
+    date_to:     str = None,
+    thread_id:   str = None,
 ) -> AgentState:
-    graph     = build_graph()
-    thread_id = thread_id or str(uuid.uuid4())
-    run_id    = str(uuid.uuid4())
+
+    graph  = build_graph()
+    run_id = thread_id or str(uuid.uuid4())  # thread_id IS run_id — never generate a new one
+
+    # Load config for BigQuery writes
+    config_path = Path(__file__).parent / "config" / "metadata.yaml"
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    project = cfg["project"]
+    dataset = cfg["dataset"]
+    bq      = None
+
+    # Write 'running' status immediately so the browser can poll it
+    try:
+        bq = bigquery.Client(project=project)
+        bq.insert_rows_json(
+            f"{project}.{dataset}.agent_runs",
+            [{
+                "runID":          run_id,
+                "reportType":     report_type,
+                "audience":       audience,
+                "supplierID":     supplier_id,
+                "goal":           goal,
+                "startedAt":      datetime.now(timezone.utc).isoformat(),
+                "completedAt":    datetime.now(timezone.utc).isoformat(),
+                "status":         "running",
+                "confidence":     None,
+                "flags":          json.dumps([]),
+                "selectedTables": json.dumps([]),
+                "queries":        json.dumps({}),
+                "rowCounts":      json.dumps({}),
+                "pullValidation": json.dumps({}),
+                "errors":         json.dumps([]),
+                "policyDecision": None,
+                "gcsPath":        None,
+                "reportDate":     datetime.now(timezone.utc).date().isoformat(),
+            }]
+        )
+        print(f"  [graph] Initial status written to BigQuery: {run_id}")
+    except Exception as e:
+        print(f"  [graph] WARNING — failed to write initial agent_run: {e}")
 
     initial_state: AgentState = {
         "report_type":        report_type,
@@ -169,7 +183,7 @@ def run_agent(
         "current_node":       None,
     }
 
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": run_id}}
 
     print(f"\n{'='*60}")
     print(f"Agent run starting")
@@ -181,4 +195,18 @@ def run_agent(
     print(f"  Run ID:      {run_id}")
     print(f"{'='*60}\n")
 
-    return graph.invoke(initial_state, config=config)
+    try:
+        return graph.invoke(initial_state, config=config)
+    except Exception as e:
+        # Write failed status so polling stops cleanly
+        if bq:
+            try:
+                bq.query(f"""
+                    UPDATE `{project}.{dataset}.agent_runs`
+                    SET status = 'failed'
+                    WHERE runID = '{run_id}'
+                """).result()
+                print(f"  [graph] Status updated to failed: {run_id}")
+            except Exception:
+                pass
+        raise
