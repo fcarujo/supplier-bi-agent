@@ -159,7 +159,8 @@ Rules:
 - For incident analysis include both orders and incidents tables
 - For return analysis include both orders and returns tables
 - For combined analysis include orders, incidents, returns, and suppliers
-- Never select a table not in the available tables list above"""
+- Never select a table not in the available tables list above
+- Always include the 'orders' table — it is required to calculate incident rates as a percentage of orders"""
 
         user_prompt = f"""Report goal: {sanitised_goal}
 
@@ -203,6 +204,11 @@ Which tables are needed? Return only the JSON object."""
 
         if not selected_tables:
             raise ValueError("[discover] No valid tables selected after security validation.")
+        
+        # Force orders table — always required for incident rate calculations
+        if "orders" in available_tables and "orders" not in selected_tables:
+            print("  [discover] Forcing 'orders' table — required for incident rate calculations")
+            selected_tables.append("orders")
 
     # ── Build table schemas for downstream nodes ──────────────────────────────
     table_schemas = {}

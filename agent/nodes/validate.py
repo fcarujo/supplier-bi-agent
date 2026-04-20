@@ -33,40 +33,17 @@ def _load_config() -> dict:
 # ── Date filter extraction ────────────────────────────────────────────────────
 
 def _extract_date_filter_from_sql(sql: str, date_col: str = "orderDate") -> Optional[str]:
-    """
-    Extract the date filter from a SQL string.
-    Returns a filter string using date_col as the column name.
-    """
     if not sql:
         return None
-
-    # Match DATE_SUB patterns
-    patterns = [
-        # DATE_SUB(CURRENT_DATE(), INTERVAL N MONTH/DAY)
-        rf"{date_col}\s*>=\s*(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*(?:MONTH|DAY)\))",
-        # DATE_TRUNC(DATE_SUB(...)) pattern
-        rf"{date_col}\s*>=\s*(DATE_TRUNC\(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*\d+\s*(?:MONTH|DAY)\),\s*\w+\))",
-        # Literal date strings
-        rf"{date_col}\s*>=\s*'(\d{{4}}-\d{{2}}-\d{{2}})'",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, sql, re.IGNORECASE)
-        if match:
-            return f"{date_col} >= {match.group(1)}"
-
-    # Try without column prefix (incidents/returns tables)
-    generic_patterns = [
-        r"(?:orderDate|incidentDate|returnDate)\s*>=\s*(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*(\d+)\s*(MONTH|DAY)\))",
-        r"(?:orderDate|incidentDate|returnDate)\s*>=\s*(DATE_TRUNC\(DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*(\d+)\s*(MONTH|DAY)\),\s*\w+\))",
-    ]
-    for pattern in generic_patterns:
-        match = re.search(pattern, sql, re.IGNORECASE)
-        if match:
-            interval_n    = match.group(2)
-            interval_unit = match.group(3).upper()
-            return f"{date_col} >= DATE_SUB(CURRENT_DATE(), INTERVAL {interval_n} {interval_unit})"
-
+    # Match INTERVAL N MONTH/DAY patterns anywhere in the SQL
+    match = re.search(
+        r"INTERVAL\s+(\d+)\s+(MONTH|DAY)",
+        sql, re.IGNORECASE
+    )
+    if match:
+        n    = match.group(1)
+        unit = match.group(2).upper()
+        return f"{date_col} >= DATE_SUB(CURRENT_DATE(), INTERVAL {n} {unit})"
     return None
 
 

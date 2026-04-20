@@ -1,192 +1,202 @@
 # Supplier Performance BI Agent
 
-An autonomous BI system that independently queries, analyses, and generates supplier performance reports — with a human-in-the-loop control plane and security controls built into the pipeline from the ground up.
-
-Built as a proof of concept for supplier performance intelligence: identifying problematic categories and SKUs, the most common incident and return patterns, and generating contextual improvement plans per supplier.
-
----
-
-## What it does
-
-The system serves two distinct audiences from the same data pipeline:
-
-**Business overview** — portfolio-level analysis across all 20 suppliers. Incident rates, return rates, resolution costs, category and supplier rankings, trend detection. Runs weekly on a schedule, published automatically to Looker Studio.
-
-**Supplier account management** — one report per supplier, drilled down to SKU and customer level. Incident type breakdown, return reason patterns, resolution cost analysis, peer benchmarking, and a contextual improvement plan with specific actions per flagged SKU. Runs monthly on a schedule, shareable directly with the supplier.
-
-Both report types flow through the same agent pipeline. The audience determines what data is exposed, how it's scoped, and what the generated narrative focuses on.
+An autonomous AI agent that generates, validates, and publishes supplier performance reports — with a human-in-the-loop review layer and a React control plane for account managers.
 
 ---
 
 ## Architecture
 
 ```
-Trigger (Cloud Scheduler / on-demand)
-    │
-    ▼
-Node 1 — Discover        reads metadata config → selects tables (no LLM for scheduled)
-    │
-    ▼
-Node 2 — Pull            runs SQL templates → validates → serialises results
-    │
-    ▼
-Node 3 — Analyse         Python pre-processing → LLM structured JSON analysis
-    │
-    ▼
-Node 4 — Generate        JSON → dual-audience narrative report
-    │
-    ▼
-Node 4b — Validate       re-queries BigQuery → compares report vs ground truth
-    │
-    ▼
-Node 5 — Review          policy engine → auto-approve / queue / escalate
-    │
-    ▼
-Node 6 — Publish         GCS + BigQuery approved_reports (→ Looker Studio Phase 5)
+Orders / Incidents / Returns / Suppliers
+              ↓
+    BigQuery (supplier_bi dataset)
+              ↓
+    LangGraph Agent Pipeline
+    discover → pull → analyse → generate → validate → review → publish
+              ↓
+    Control Plane (FastAPI + React)
+    Queue · Dashboards · New Report · Ask · Observability
+              ↓
+    Cloud Run (europe-west2)
 ```
 
-State flows through every node as a typed `AgentState` dictionary. Each node reads what it needs and writes its output back to state. Nothing is shared between nodes except through state — no global variables, no side effects.
+---
+
+## Pipeline Nodes
+
+| Node | What it does |
+|---|---|
+| **discover** | Selects which BigQuery tables are needed. Template mode for scheduled reports, LLM mode for ad-hoc. Always forces `orders` table for incident rate calculations. |
+| **pull** | Generates and executes BigQuery SQL. Template SQL for scheduled reports, LLM-generated SQL for ad-hoc. Handles BOOL column constraints. |
+| **analyse** | Pre-processes query results into structured analysis. Ad-hoc aware — handles free-form SQL with period comparisons. Sets confidence score and flags. |
+| **generate** | Calls Claude Sonnet to write the full report narrative. Retry logic on 529 overload. |
+| **validate** | Compares reported metrics against BigQuery ground truth. Scope-aware — extracts date range and supplier from actual SQL queries run, not hardcoded defaults. |
+| **review** | Policy engine — auto-approves, routes to queue, or escalates based on confidence, hallucination flags, and pipeline errors. |
+| **publish** | Writes approved reports to GCS and `approved_reports` BigQuery table. |
 
 ---
 
-## SQL strategy
+## Report Types
 
-A deliberate design decision separates scheduled reports from ad-hoc requests:
-
-**Scheduled reports** (`weekly_supplier_overview`, `monthly_supplier_account`, etc.) use pre-defined SQL templates stored in `agent/config/metadata.yaml`. Templates are version-controlled, tested, and locked. Zero LLM involvement in query generation — consistent results on every run with no variance.
-
-**Ad-hoc reports** (`adhoc_business`, `adhoc_supplier`) use LLM-generated SQL at runtime since the goal is open-ended. Constrained to flat `GROUP BY` aggregations — no CTEs, no window functions, no subqueries. Always requires human review before publishing.
-
----
-
-## Security architecture
-
-Three independent layers — an attacker must bypass all three simultaneously:
-
-**Layer 1 — Input sanitiser**
-Every goal string is scanned for prompt injection patterns before reaching the LLM. Patterns include instruction override attempts, SQL injection fragments, and script tags. Detections are flagged to the audit trail and the human review gate.
-
-**Layer 2 — Column allowlist and SQL validator**
-Every SQL query (template or LLM-generated) is validated before execution. Checks: no dangerous operations (DROP, DELETE, UPDATE etc.), correct table reference, no SELECT *, only columns defined in the metadata config. Supplier-scoped reports have a `WHERE supplierID = 'SUPXXX'` filter injected automatically — the LLM cannot bypass this.
-
-**Layer 3 — IAM at the infrastructure level**
-The service account running BigQuery queries has read-only access to the allowed dataset only. Even a maliciously crafted query that bypasses layers 1 and 2 would be rejected by BigQuery at the infrastructure level.
-
-Additional controls: `netRevenue` (internal margin data) and `customerID` are blocked columns — never exposed regardless of report type. Maximum row limits prevent full table scans reaching the LLM.
-
----
-
-## Data layer
-
-Synthetic supplier performance dataset — 500k orders across 20 suppliers, 7 product categories, 301 SKUs, 12 months of history. Appended daily via a Cloud Function.
-
-| Table | Seed rows | Daily append | Description |
+| Type | Audience | Cadence | Tables |
 |---|---|---|---|
-| orders | 500k | ~250/day | Core transaction table |
-| incidents | ~56k | ~25/day (10% of orders) | 10% incident rate, unevenly distributed |
-| returns | ~30k | ~12/day (5% of orders) | 5% buyers remorse return rate |
-| suppliers | 20 | static | Reference table |
-
-**Intentional signal patterns** designed for the agent to detect:
-
-- 5 preferred suppliers account for ~78% of order volume and the majority of incidents — agent must distinguish absolute incident counts from incident rate
-- SUP003 has a sharp incident spike starting 3 months ago — early warning signal
-- Electronics and Toys & Games carry elevated incident rates independent of supplier
-- Supplier-direct fulfilment has 4× the lost item rate versus warehouse — root cause signal
-- Budget price tier has 2× the return rate of premium — price-quality correlation
-- Probationary suppliers have higher incident rates proportionally despite lower volume
-
-Customer comments on incidents and returns were enriched using Claude with product-specific context derived from SKU codes — a chair cannot have a cracked screen, a tablet cannot have a broken leg. Comments are 1-2 sentences, specific and concrete, designed to give the NLP layer genuine signal to work with.
+| `weekly_supplier_overview` | Business | Weekly | orders, incidents, returns, suppliers |
+| `monthly_supplier_account` | Supplier | Monthly | orders, incidents, returns, suppliers |
+| `adhoc_business` | Business | On demand | LLM-selected |
+| `adhoc_supplier` | Supplier | On demand | LLM-selected |
 
 ---
 
-## Project structure
+## Control Plane
+
+### Tabs
+
+**Queue** — Pending reports awaiting human decision. Shows confidence, validation checks, hallucination flags. Click to open audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Option to share approved supplier reports with the supplier.
+
+**Dashboards**
+- *Business Overview* — 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers bar, category incident rate bar, resolution mix pie. Cross-filtering: click any chart to filter all others.
+- *Supplier Account* — Per-supplier drill-down with 2 scorecard rows (metrics + portfolio benchmarks), category charts, SKU incident & return tables, return reasons, incident type pie, resolution mix. Cross-filtering on category and incident type.
+
+**New Report** — Plain English goal → agent pipeline runs in background → page updates automatically when done → Internal Only or Share with Supplier buttons.
+
+**Ask** — Natural language → BigQuery SQL → answer table + SQL shown transparently. Auto-retry up to 3 times on SQL errors.
+
+**Observability** — Full run history with confidence, decisions, reviewer, and run IDs.
+
+### Supplier Portal
+
+Route `/supplier/:id` shows a clean supplier-facing view with their dashboard data and any approved reports shared with them. No internal metrics or governance UI.
+
+---
+
+## Key Fixes — Phase 5
+
+| Fix | What was wrong | What was fixed |
+|---|---|---|
+| Run ID mismatch | `graph.py` generated a new `run_id` separate from `thread_id`. Browser polled `thread_id` but BigQuery had `run_id`. | `run_id = thread_id` throughout. |
+| No initial BigQuery status | Nothing written to `agent_runs` until pipeline finished. | Write `status = "running"` immediately at start. Write `status = "failed"` on exception. |
+| Status endpoint streaming delay | `agent_runs` UPDATE not visible immediately after streaming insert. | Status endpoint checks `pending_reports` first. |
+| Ad-hoc pre-processor reading 0 orders | Pre-processor assumed fixed column names. | Detect ad-hoc reports and pass raw data directly to LLM. |
+| Validate node wrong scope | Ground truth used all-supplier 30-day data regardless of report scope. | Extract date range and supplier from actual SQL queries run. |
+| supplierID case sensitivity | `sup002` got 0 rows. | Normalise to uppercase in `trigger_run`. |
+| SUM on BOOL columns | LLM generated `SUM(hasIncident)` which BigQuery rejects. | Added rule to pull node prompt. |
+| React polling stale run ID | Old `setInterval` kept firing from previous submissions. | Clear existing poll before starting new one. Use explicit terminal status list. |
+| `orders` table omitted for ad-hoc | LLM sometimes didn't select `orders`. | Enforce `orders` in code after LLM selection. |
+| Confidence showing 0% in UI | `agent_runs` confidence null due to BigQuery streaming buffer delay. | Fall back to `reportJSON.confidence` in `pending_reports`. |
+| Cloud Run `ModuleNotFoundError: agent` | Import ran inside a thread at request time. | Move import to module level with `sys.path.insert(0, "/app")`. |
+| Cloud Run requirements conflict | Pinned versions had conflicting sub-dependencies. | Remove version pins, let pip resolve compatible versions. |
+
+---
+
+## GCP Infrastructure
+
+| Resource | Name |
+|---|---|
+| Project | `supplier-bi-agent-2025` |
+| Region | `europe-west2` |
+| BigQuery dataset | `supplier_bi` |
+| Cloud Run service | `supplier-bi-control-plane` |
+| GCS bucket (approved) | `supplier-bi-agent-2025-approved-reports` |
+| GCS bucket (raw) | `supplier-bi-agent-2025-raw-reports` |
+| Service account | `bi-agent@supplier-bi-agent-2025.iam.gserviceaccount.com` |
+
+---
+
+## BigQuery Tables
+
+| Table | Purpose |
+|---|---|
+| `orders` | Order-level data — revenue, incident flags, return flags |
+| `incidents` | Incident detail — type, resolution, cost, rating |
+| `returns` | Return detail — reason, resolution, rating |
+| `suppliers` | Supplier master — name, tier, region, category |
+| `agent_runs` | Pipeline run log — status, confidence, queries, flags |
+| `pending_reports` | Human review queue |
+| `approved_reports` | Published reports — internal and supplier-facing |
+| `validation_results` | Per-metric validation checks per run |
+| `human_decisions` | Reviewer decisions with reason and timestamp |
+
+---
+
+## Local Development
+
+```bash
+# Start FastAPI backend
+cd ~/projects/supplier-bi-agent
+uvicorn control_plane.main:app --reload --port 8000
+
+# Start React frontend
+cd control_plane/frontend
+npm run dev
+# → http://localhost:5173
+```
+
+## Deploy to Cloud Run
+
+```bash
+cd ~/projects/supplier-bi-agent
+
+gcloud run deploy supplier-bi-control-plane \
+  --source . \
+  --region europe-west2 \
+  --project supplier-bi-agent-2025 \
+  --platform managed \
+  --no-allow-unauthenticated \
+  --set-env-vars GCP_PROJECT=supplier-bi-agent-2025,BQ_DATASET=supplier_bi,ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY .env | cut -d '=' -f2) \
+  --memory 1Gi \
+  --timeout 300
+```
+
+## Access deployed service
+
+```bash
+gcloud run services proxy supplier-bi-control-plane \
+  --region europe-west2 \
+  --project supplier-bi-agent-2025 \
+  --port 8081
+# → http://localhost:8081
+```
+
+---
+
+## Cost Estimate (monthly at PoC scale)
+
+| Component | Cost |
+|---|---|
+| GCP infrastructure | ~$2–5 |
+| Anthropic API (scheduled reports) | ~$3–5 |
+| Anthropic API (ad-hoc + NL queries) | ~$3–5 |
+| **Total** | **~$8–15/month** |
+
+---
+
+## Project Structure
 
 ```
 supplier-bi-agent/
 ├── agent/
-│   ├── config/
-│   │   ├── metadata.yaml      # report definitions, SQL templates, security config
-│   │   └── policies.yaml      # publish rules per report type — policy engine input
-│   ├── control/
-│   │   └── policy_engine.py   # deterministic rule evaluator — no LLM
+│   ├── graph.py              # LangGraph pipeline — run_id fix, initial BQ write
 │   ├── nodes/
-│   │   ├── discover.py        # Node 1 — table selection
-│   │   ├── pull.py            # Node 2 — SQL execution and result serialisation
-│   │   ├── analyse.py         # Node 3 — pre-processing + structured JSON analysis
-│   │   ├── generate.py        # Node 4 — dual-audience narrative report generation
-│   │   ├── validate.py        # Node 4b — semantic validation vs BigQuery ground truth
-│   │   ├── review.py          # Node 5 — policy engine + route to queue / auto-approve
-│   │   └── publish.py         # Node 6 — GCS + BigQuery approved_reports
-│   └── graph.py               # LangGraph AgentState and full 7-node graph
-├── data/
-│   ├── seed/
-│   │   ├── setup_bigquery.py       # creates dataset, tables, partitioning, clustering
-│   │   ├── setup_control_store.py  # creates agent_runs, validation_results, human_decisions, pending_reports
-│   │   ├── seed_data.py            # generates 500k-row synthetic dataset
-│   │   └── enrich_comments.py      # Claude-powered comment enrichment with checkpoint/resume
-│   └── daily_append/
-│       ├── main.py            # Cloud Function — ~250 rows/day
-│       └── requirements.txt
-├── control_plane/             # Semantic control plane UI
-│   ├── main.py                # FastAPI backend — reads/writes BigQuery
-│   ├── requirements.txt
-│   ├── Dockerfile
-│   └── frontend/              # React app — deployed to Cloud Run
-│       ├── src/
-│       │   ├── App.jsx        # full control plane UI — queue, audit, decision, observability
-│       │   └── main.jsx
-│       ├── index.html
-│       ├── package.json
-│       └── vite.config.js
-├── dashboards/                # Looker Studio config — Phase 5
-├── docs/
-│   └── bi-agent-roadmap.html  # interactive project tracker
-├── test_agent.py              # test suite (5 tests — all passing)
-└── .env.example               # required environment variables
+│   │   ├── discover.py       # Table selection — forces orders table
+│   │   ├── pull.py           # SQL generation + execution
+│   │   ├── analyse.py        # Ad-hoc aware pre-processor
+│   │   ├── generate.py       # Report narrative generation
+│   │   ├── validate.py       # Scope-aware ground truth validation
+│   │   ├── review.py         # Policy engine
+│   │   └── publish.py        # GCS + BigQuery publish
+│   └── config/
+│       ├── metadata.yaml     # Table schemas, SQL templates, allowed columns
+│       └── policies.yaml     # Auto-approve rules per report type
+├── control_plane/
+│   ├── main.py               # FastAPI — all endpoints + static file serving
+│   ├── requirements.txt      # Python dependencies (unpinned for compatibility)
+│   ├── Dockerfile            # Multi-stage: Node build + Python serve
+│   ├── .dockerignore
+│   └── frontend/
+│       └── src/
+│           └── App.jsx       # Full React control plane UI
+├── Dockerfile                # Symlink → control_plane/Dockerfile
+├── .dockerignore             # Project-root ignore for Cloud Run builds
+├── .gitignore
+└── test_agent.py             # Integration tests (tests 4 and 5)
 ```
-
----
-
-## Semantic control plane
-
-Phase 4 implements governance as an active operational layer across four interdependent components:
-
-**Semantic validation (Node 4b)** — after Generate, re-queries BigQuery directly and compares key metrics stated in the report against ground truth. Incidents and returns are joined to orders on `orderID` so resolution costs always align with the same order window as revenue. Deviations above 10% are flagged, above 20% are hallucination candidates. Improvement actions are checked to ensure they reference specific SKUs or categories.
-
-**Policy engine** — `policies.yaml` defines publish rules per report type. A deterministic evaluator (no LLM) produces one of three decisions: `auto_approve`, `route_to_queue`, or `escalate`. Rules cover confidence threshold, validation pass rate, zero hallucination tolerance, metric deviation limits, required report sections, minimum improvement actions, and SKU citation requirements. Soft rule failures route to queue, hard failures escalate.
-
-**Observability store** — four BigQuery tables: `agent_runs` (full pipeline trace per execution), `validation_results` (expected vs actual metrics), `human_decisions` (every approve/reject/edit with reviewer and reason), `pending_reports` (review queue). Human decisions feed back into retry context.
-
-**React control plane** — FastAPI backend + React frontend deployed to Cloud Run. Four views: run queue with confidence and validation status, audit view with report + validation results + policy rules + raw SQL side by side, decision interface (approve / edit and approve / reject with required reason), and observability dashboard with run history and confidence trends. Accessed securely via `gcloud run services proxy`.
-
-| Layer | Technology | Purpose |
-|---|---|---|
-| Language | Python 3.11 | All agent and pipeline code |
-| Agent orchestration | LangGraph | Stateful directed graph, typed state, human-in-the-loop interrupts |
-| LLM | Claude API | Discover (ad-hoc), Pull (ad-hoc SQL), Analyse, Generate |
-| Data warehouse | BigQuery | All data storage, partitioned and clustered per table |
-| Tracing | LangSmith | Node-by-node trace, behavioural eval suite — Phase 3 |
-| Reporting frontend | Looker Studio | Native BigQuery connector, shareable dashboards — Phase 5 |
-| Control plane | React + Cloud Run | Audit UI, approve/reject, run history — Phase 4 |
-| Daily data append | Cloud Functions Gen 2 | Serverless, triggered by Pub/Sub |
-| Scheduling | Cloud Scheduler | Cron → Pub/Sub → Cloud Functions / Cloud Run |
-| Report storage | GCS | Raw, approved, audit log buckets |
-| Secrets | Secret Manager | All credentials, zero secrets in code |
-| Infra monitoring | GCP Security Command Center | Continuous posture assessment |
-
----
-
-## Build status
-
-| Phase | Status | Description |
-|---|---|---|
-| 1 — Data layer | ✅ Complete | BigQuery schema, 500k seed, daily append, Cloud Scheduler |
-| 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, LangGraph state, SQL templates, security layer |
-| 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports, SKU improvement plans |
-| 4 — Semantic control plane | ✅ Complete | Validation node, policy engine, observability store, React UI on Cloud Run |
-| 5 — Reporting & ad-hoc | 🔄 Next | React dashboards (internal + supplier-facing) · ad-hoc trigger · NL BI |
-| 6 — Multi-agent | ⬜ Future | Router agent, specialised agents, parallel execution, Vertex AI NLP |
-| 7 — Supplier portal | ⬜ Future | Firebase Auth, supplier-facing React views, row-level security |
-
-

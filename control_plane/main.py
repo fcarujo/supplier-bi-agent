@@ -11,6 +11,7 @@ Supplier-facing view at /supplier/:id
 
 import json
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from google.cloud import bigquery
 from pydantic import BaseModel
+
+# ── Agent import — must be at module level so it resolves at container startup
+sys.path.insert(0, "/app")
+from agent.graph import run_agent as _run_agent
 
 app = FastAPI(title="Supplier BI Agent Control Plane")
 
@@ -43,19 +48,19 @@ def bq():
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class DecisionRequest(BaseModel):
-    runID:           str
-    decision:        str
-    reviewer:        str
-    reason:          Optional[str] = None
-    editedNarrative: Optional[str] = None
+    runID:             str
+    decision:          str
+    reviewer:          str
+    reason:            Optional[str]  = None
+    editedNarrative:   Optional[str]  = None
     shareWithSupplier: Optional[bool] = False
 
 class RunRequest(BaseModel):
-    reportType:  str
-    supplierID:  Optional[str] = None
-    goal:        str
-    dateFrom:    Optional[str] = None
-    dateTo:      Optional[str] = None
+    reportType: str
+    supplierID: Optional[str] = None
+    goal:       str
+    dateFrom:   Optional[str] = None
+    dateTo:     Optional[str] = None
 
 class AskRequest(BaseModel):
     question:   str
@@ -86,7 +91,6 @@ def _row_to_dict(row):
                 "validatedAt", "approvedAt", "onboardingDate"]:
         if key in d and d[key] and hasattr(d[key], "isoformat"):
             d[key] = d[key].isoformat()
-    # Convert date objects
     for key in ["reportDate", "orderDate"]:
         if key in d and d[key] and hasattr(d[key], "isoformat"):
             d[key] = d[key].isoformat()
@@ -108,18 +112,6 @@ def _get_pending_field(client, run_id: str, field: str):
 
 
 # ── Date helpers ──────────────────────────────────────────────────────────────
-# Default: last 6 months with 1-month lag
-# e.g. in April → October to March (6 months, excluding current month)
-
-DEFAULT_DATE_FILTER = """
-    orderDate >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 7 MONTH)
-    AND orderDate < DATE_TRUNC(CURRENT_DATE(), MONTH)
-"""
-
-DEFAULT_INCIDENT_DATE_FILTER = """
-    o.orderDate >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 7 MONTH)
-    AND o.orderDate < DATE_TRUNC(CURRENT_DATE(), MONTH)
-"""
 
 def _build_date_filter(date_from: str = None, date_to: str = None, table_alias: str = None) -> str:
     col = f"{table_alias}.orderDate" if table_alias else "orderDate"
@@ -199,12 +191,17 @@ def get_run(run_id: str):
     if pending_rows:
         p = _row_to_dict(pending_rows[0])
         run.update({
-            "reportNarrative":   p.get("reportNarrative"),
-            "reportJSON":        _safe_json(p.get("reportJSON")),
-            "validationPassed":  p.get("validationPassed", 0),
-            "validationFailed":  p.get("validationFailed", 0),
-            "hallucinationFlags":p.get("hallucinationFlags", 0),
+            "reportNarrative":    p.get("reportNarrative"),
+            "reportJSON":         _safe_json(p.get("reportJSON")),
+            "validationPassed":   p.get("validationPassed", 0),
+            "validationFailed":   p.get("validationFailed", 0),
+            "hallucinationFlags": p.get("hallucinationFlags", 0),
         })
+        # Also read confidence from reportJSON if not in agent_runs
+        if not run.get("confidence"):
+            rj = _safe_json(p.get("reportJSON"))
+            if isinstance(rj, dict) and rj.get("confidence"):
+                run["confidence"] = rj["confidence"]
 
     val_rows = list(client.query(f"""
         SELECT validationID, metricName, expectedValue, reportedValue,
@@ -238,9 +235,28 @@ def get_run_status(run_id: str):
         WHERE runID = '{run_id}' LIMIT 1
     """).result())
     if pending:
-        p = dict(pending[0])
+        p        = dict(pending[0])
         terminal = "escalated" if p.get("policyDecision") == "escalate" else "pending_review"
-        return {"runID": run_id, "status": terminal, "confidence": p.get("confidence"), "policyDecision": p.get("policyDecision")}
+
+        # Confidence is often null in agent_runs due to BigQuery streaming buffer delay.
+        # Try agent_runs first, then fall back to reportJSON.confidence in pending_reports.
+        conf_rows = list(client.query(f"""
+            SELECT confidence FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE runID = '{run_id}' LIMIT 1
+        """).result())
+        conf_val = dict(conf_rows[0]).get("confidence") if conf_rows else None
+
+        if conf_val is None:
+            rj_rows = list(client.query(f"""
+                SELECT reportJSON FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
+                WHERE runID = '{run_id}' LIMIT 1
+            """).result())
+            if rj_rows:
+                rj = _safe_json(dict(rj_rows[0]).get("reportJSON"))
+                if isinstance(rj, dict):
+                    conf_val = rj.get("confidence")
+
+        return {"runID": run_id, "status": terminal, "confidence": conf_val, "policyDecision": p.get("policyDecision")}
 
     # Fall back to agent_runs
     rows = list(client.query(f"""
@@ -252,6 +268,7 @@ def get_run_status(run_id: str):
         return {"runID": run_id, "status": "running"}
     r = dict(rows[0])
     return {"runID": run_id, "status": r.get("status") or "running", "confidence": r.get("confidence"), "policyDecision": r.get("policyDecision")}
+
 
 # ── POST /api/decisions ───────────────────────────────────────────────────────
 
@@ -300,7 +317,6 @@ def post_decision(body: DecisionRequest):
         SET status = '{agent_status}' WHERE runID = '{body.runID}'
     """).result()
 
-    # If approved and share with supplier — write to approved_reports
     if body.decision in ("approved", "edited_and_approved") and body.shareWithSupplier and supplier_id:
         narrative = body.editedNarrative or _get_pending_field(client, body.runID, "reportNarrative")
         if narrative:
@@ -363,11 +379,10 @@ def get_business_dashboard(
     date_from: Optional[str] = None,
     date_to:   Optional[str] = None,
 ):
-    client      = bq()
+    client       = bq()
     order_filter = _build_date_filter(date_from, date_to)
     inc_filter   = _build_date_filter(date_from, date_to, "o")
 
-    # Scorecards
     sc = list(client.query(f"""
         SELECT
             COUNT(orderID)                                                        AS total_orders,
@@ -387,7 +402,6 @@ def get_business_dashboard(
         WHERE {inc_filter}
     """).result())[0]
 
-    # Monthly trend
     trend = list(client.query(f"""
         SELECT
             FORMAT_DATE('%Y-%m', orderDate)                                       AS month,
@@ -400,12 +414,11 @@ def get_business_dashboard(
         GROUP BY month ORDER BY month ASC
     """).result())
 
-    # Resolution cost % of gross revenue by month
     res_trend = list(client.query(f"""
         SELECT
-            FORMAT_DATE('%Y-%m', o.orderDate)                                     AS month,
-            ROUND(SUM(o.grossRevenue), 2)                                         AS gross_revenue,
-            ROUND(SUM(i.resolutionCost), 2)                                       AS resolution_cost,
+            FORMAT_DATE('%Y-%m', o.orderDate)                                       AS month,
+            ROUND(SUM(o.grossRevenue), 2)                                           AS gross_revenue,
+            ROUND(SUM(i.resolutionCost), 2)                                         AS resolution_cost,
             ROUND(SAFE_DIVIDE(SUM(i.resolutionCost), SUM(o.grossRevenue)) * 100, 2) AS resolution_cost_pct
         FROM `{GCP_PROJECT}.{BQ_DATASET}.orders` o
         LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.incidents` i ON i.orderID = o.orderID
@@ -413,7 +426,6 @@ def get_business_dashboard(
         GROUP BY month ORDER BY month ASC
     """).result())
 
-    # Top 10 suppliers
     suppliers = list(client.query(f"""
         SELECT
             o.supplierID,
@@ -430,7 +442,6 @@ def get_business_dashboard(
         ORDER BY incident_rate_pct DESC LIMIT 10
     """).result())
 
-    # Category breakdown
     categories = list(client.query(f"""
         SELECT
             productCategory,
@@ -442,7 +453,6 @@ def get_business_dashboard(
         GROUP BY productCategory ORDER BY incident_rate_pct DESC
     """).result())
 
-    # Resolution method mix
     res_mix = list(client.query(f"""
         SELECT
             i.incidentResolution,
@@ -493,7 +503,6 @@ def get_supplier_dashboard(
         raise HTTPException(status_code=404, detail=f"Supplier {supplier_id} not found")
     supplier = _row_to_dict(sup_rows[0])
 
-    # Supplier scorecards
     sc = list(client.query(f"""
         SELECT
             COUNT(orderID)                                                        AS total_orders,
@@ -513,7 +522,6 @@ def get_supplier_dashboard(
         WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
     """).result())[0]
 
-    # Portfolio benchmarks
     bench = list(client.query(f"""
         SELECT
             ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2) AS portfolio_incident_rate,
@@ -524,8 +532,8 @@ def get_supplier_dashboard(
 
     bench_cost = list(client.query(f"""
         SELECT
-            ROUND(SUM(i.resolutionCost), 2)                                    AS portfolio_resolution_cost,
-            COUNT(DISTINCT i.supplierID)                                        AS supplier_count
+            ROUND(SUM(i.resolutionCost), 2)    AS portfolio_resolution_cost,
+            COUNT(DISTINCT i.supplierID)        AS supplier_count
         FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
         INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
         WHERE {inc_filter}
@@ -536,7 +544,6 @@ def get_supplier_dashboard(
         max(float(bench_cost["supplier_count"] or 1), 1)
     )
 
-    # Category incident rate
     cat_inc = list(client.query(f"""
         SELECT
             productCategory,
@@ -547,7 +554,6 @@ def get_supplier_dashboard(
         GROUP BY productCategory ORDER BY incident_rate_pct DESC
     """).result())
 
-    # Category return rate
     cat_ret = list(client.query(f"""
         SELECT
             productCategory,
@@ -558,7 +564,6 @@ def get_supplier_dashboard(
         GROUP BY productCategory ORDER BY return_rate_pct DESC
     """).result())
 
-    # SKU incidents
     sku_inc = list(client.query(f"""
         SELECT
             i.productSKU,
@@ -575,7 +580,6 @@ def get_supplier_dashboard(
         ORDER BY total_incidents DESC LIMIT 100
     """).result())
 
-    # SKU returns
     sku_ret = list(client.query(f"""
         SELECT
             r.productSKU,
@@ -590,7 +594,6 @@ def get_supplier_dashboard(
         ORDER BY total_returns DESC LIMIT 100
     """).result())
 
-    # Return reasons
     ret_reasons = list(client.query(f"""
         SELECT
             r.buyersRemorseReason,
@@ -602,7 +605,6 @@ def get_supplier_dashboard(
         GROUP BY r.buyersRemorseReason ORDER BY total_returns DESC
     """).result())
 
-    # Incident types
     inc_types = list(client.query(f"""
         SELECT
             i.incidentType,
@@ -614,7 +616,6 @@ def get_supplier_dashboard(
         GROUP BY i.incidentType ORDER BY total_incidents DESC
     """).result())
 
-    # Resolution mix
     res_mix = list(client.query(f"""
         SELECT
             i.incidentResolution,
@@ -626,7 +627,6 @@ def get_supplier_dashboard(
         GROUP BY i.incidentResolution ORDER BY total_incidents DESC
     """).result())
 
-    # Latest approved report + ad-hoc reports shared with supplier
     reports = list(client.query(f"""
         SELECT reportNarrative, reportDate, confidence, approvedBy, approvedAt, reportType
         FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
@@ -638,16 +638,16 @@ def get_supplier_dashboard(
         "supplier_id": supplier_id,
         "supplier":    supplier,
         "scorecards": {
-            "total_orders":              float(sc["total_orders"] or 0),
-            "total_gross_revenue":       float(sc["total_gross_revenue"] or 0),
-            "total_product_cost":        float(sc["total_product_cost"] or 0),
-            "incident_rate_pct":         float(sc["incident_rate_pct"] or 0),
-            "return_rate_pct":           float(sc["return_rate_pct"] or 0),
-            "returned_revenue":          float(sc["returned_revenue"] or 0),
-            "total_resolution_cost":     float(res_cost["total_resolution_cost"] or 0),
-            "portfolio_incident_rate":   float(bench["portfolio_incident_rate"] or 0),
-            "portfolio_return_rate":     float(bench["portfolio_return_rate"] or 0),
-            "portfolio_avg_res_cost":    round(portfolio_avg_res_cost, 2),
+            "total_orders":            float(sc["total_orders"] or 0),
+            "total_gross_revenue":     float(sc["total_gross_revenue"] or 0),
+            "total_product_cost":      float(sc["total_product_cost"] or 0),
+            "incident_rate_pct":       float(sc["incident_rate_pct"] or 0),
+            "return_rate_pct":         float(sc["return_rate_pct"] or 0),
+            "returned_revenue":        float(sc["returned_revenue"] or 0),
+            "total_resolution_cost":   float(res_cost["total_resolution_cost"] or 0),
+            "portfolio_incident_rate": float(bench["portfolio_incident_rate"] or 0),
+            "portfolio_return_rate":   float(bench["portfolio_return_rate"] or 0),
+            "portfolio_avg_res_cost":  round(portfolio_avg_res_cost, 2),
         },
         "cat_incident_rate": [_row_to_dict(r) for r in cat_inc],
         "cat_return_rate":   [_row_to_dict(r) for r in cat_ret],
@@ -665,15 +665,12 @@ def get_supplier_dashboard(
 @app.post("/api/runs")
 def trigger_run(body: RunRequest):
     import threading
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from agent.graph import run_agent
 
     run_id = str(uuid.uuid4())
 
     def _run():
         try:
-            run_agent(
+            _run_agent(
                 report_type = body.reportType,
                 goal        = body.goal,
                 audience    = "supplier" if body.supplierID else "business",
@@ -700,7 +697,7 @@ def ask_question(body: AskRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
 
-    config_path = Path(__file__).parent.parent / "agent" / "config" / "metadata.yaml"
+    config_path = Path(__file__).parent / "agent" / "config" / "metadata.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
@@ -763,8 +760,8 @@ Available tables:
 
         try:
             bq_client = bq()
-            rows = list(bq_client.query(sql).result())
-            data = [_row_to_dict(r) for r in rows]
+            rows      = list(bq_client.query(sql).result())
+            data      = [_row_to_dict(r) for r in rows]
             break
         except Exception as e:
             last_error = str(e).split("\n")[0]
@@ -774,17 +771,18 @@ Available tables:
                     detail="I wasn't able to answer that question. Try rephrasing it or being more specific about the time period or metric."
                 )
 
-    # Log
     try:
         bq().insert_rows_json(f"{GCP_PROJECT}.{BQ_DATASET}.agent_runs", [{
-            "runID": str(uuid.uuid4()), "reportType": "nl_query",
-            "audience": "supplier" if body.supplierID else "business",
-            "supplierID": body.supplierID, "goal": body.question,
-            "startedAt": datetime.now(timezone.utc).isoformat(),
+            "runID":       str(uuid.uuid4()),
+            "reportType":  "nl_query",
+            "audience":    "supplier" if body.supplierID else "business",
+            "supplierID":  body.supplierID,
+            "goal":        body.question,
+            "startedAt":   datetime.now(timezone.utc).isoformat(),
             "completedAt": datetime.now(timezone.utc).isoformat(),
-            "status": "completed",
-            "queries": json.dumps({"nl_query": sql}),
-            "reportDate": datetime.now(timezone.utc).date().isoformat(),
+            "status":      "completed",
+            "queries":     json.dumps({"nl_query": sql}),
+            "reportDate":  datetime.now(timezone.utc).date().isoformat(),
         }])
     except Exception:
         pass

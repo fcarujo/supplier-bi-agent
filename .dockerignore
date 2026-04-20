@@ -1,0 +1,10 @@
+control_plane/frontend/node_modules
+control_plane/frontend/.vite
+control_plane/static
+__pycache__
+*.pyc
+.env
+data/
+docs/
+test_agent.py
+.git

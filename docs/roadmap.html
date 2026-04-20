@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Supplier BI Agent — Roadmap</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0e1a;color:#e2e8f0;font-family:'DM Sans','Helvetica Neue',sans-serif;padding:40px 32px;max-width:1100px;margin:0 auto}
+  h1{font-size:24px;font-weight:700;margin-bottom:6px}
+  .sub{color:#64748b;font-size:14px;margin-bottom:40px}
+  .phase{margin-bottom:32px;border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden}
+  .phase-header{display:flex;align-items:center;gap:14px;padding:16px 22px;background:rgba(255,255,255,0.03)}
+  .badge{padding:3px 12px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap}
+  .done{background:rgba(34,197,94,0.15);color:#22c55e}
+  .inprogress{background:rgba(96,165,250,0.15);color:#60a5fa}
+  .planned{background:rgba(100,116,139,0.15);color:#94a3b8}
+  .phase-title{font-size:16px;font-weight:700;color:#e2e8f0}
+  .phase-sub{font-size:13px;color:#64748b;margin-left:auto}
+  .items{padding:0 22px 18px}
+  .item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+  .item:last-child{border-bottom:none}
+  .tick{font-size:14px;margin-top:1px;flex-shrink:0}
+  .item-text{font-size:13px;color:#cbd5e1;line-height:1.6}
+  .item-text span{color:#64748b;font-size:12px;display:block;margin-top:2px}
+  .section-label{font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;padding:12px 0 4px;font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>Supplier BI Agent</h1>
+<p class="sub">Product roadmap — last updated 20 April 2026</p>
+
+<!-- Phase 1 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge done">✓ Complete</span>
+    <span class="phase-title">Phase 1 — Foundation</span>
+    <span class="phase-sub">GCP · BigQuery · Synthetic data</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">✓</span><div class="item-text">GCP project setup — BigQuery, GCS, Cloud Scheduler, service accounts<span>supplier-bi-agent-2025 · europe-west2</span></div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">BigQuery schema — orders, incidents, returns, suppliers, agent_runs, pending_reports, approved_reports, validation_results, human_decisions</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Synthetic data generation — 20 suppliers, 200k+ orders, 12 months of history with realistic incident and return distributions</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">LangGraph agent skeleton — AgentState, graph wiring, MemorySaver checkpointing</div></div>
+  </div>
+</div>
+
+<!-- Phase 2 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge done">✓ Complete</span>
+    <span class="phase-title">Phase 2 — Data Pipeline</span>
+    <span class="phase-sub">Discover · Pull · Analyse</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">✓</span><div class="item-text">Discover node — template mode for scheduled reports, LLM mode for ad-hoc<span>Always forces orders table for incident rate calculations</span></div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Pull node — template SQL and LLM-generated SQL, BigQuery execution, BOOL column handling</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Analyse node — pre-processor, ad-hoc detection, period-comparison awareness, confidence scoring, flag generation</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">metadata.yaml — table schemas, allowed columns, SQL templates, date filters per report type</div></div>
+  </div>
+</div>
+
+<!-- Phase 3 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge done">✓ Complete</span>
+    <span class="phase-title">Phase 3 — Report Generation</span>
+    <span class="phase-sub">Generate · Validate · Review · Publish</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">✓</span><div class="item-text">Generate node — Claude Sonnet narrative generation, supplier vs business audience prompts, retry on 529</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Validate node — semantic validation against BigQuery ground truth, scope-aware date filtering, hallucination detection</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Review node — policy engine, auto-approve / route to queue / escalate decisions, policies.yaml</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Publish node — GCS markdown export, approved_reports BigQuery table, audit trail</div></div>
+  </div>
+</div>
+
+<!-- Phase 4 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge done">✓ Complete</span>
+    <span class="phase-title">Phase 4 — Human-in-the-Loop</span>
+    <span class="phase-sub">Review queue · Audit UI · Policy engine</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">✓</span><div class="item-text">FastAPI control plane — queue, run detail, decisions, history endpoints</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">React audit UI — Report / Validation / Policy / Data tabs, confidence meter, hallucination badges</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Decision workflow — Approve / Edit & Approve / Reject with reviewer and reason</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Integration tests 1–5 all passing — weekly business and monthly supplier account auto-approved 10/10 and 11/11 checks</div></div>
+  </div>
+</div>
+
+<!-- Phase 5 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge done">✓ Complete</span>
+    <span class="phase-title">Phase 5 — Dashboards, Ad-hoc & Deployment</span>
+    <span class="phase-sub">React dashboards · Ad-hoc reports · NL BI · Cloud Run</span>
+  </div>
+  <div class="items">
+    <div class="section-label">Dashboards</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Business Overview — 7 scorecards, incident/return trend, resolution cost % trend, top suppliers, category breakdown, resolution mix</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Supplier Account — metrics + benchmark scorecards, category charts, SKU incident/return tables, return reasons, incident types</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Cross-filtering — clicking any chart filters all other charts on the page</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Date range controls — presets and custom date picker on both dashboards</div></div>
+    <div class="section-label">Ad-hoc Reports</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">New Report tab — plain English goal, report type selector, supplier selector</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Automatic page update — polling stops when pipeline completes, results shown without refresh</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Internal Only / Share with Supplier buttons after report completes</div></div>
+    <div class="section-label">Natural Language BI</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Ask tab — plain English → BigQuery SQL → answer table with SQL shown transparently</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Auto-retry up to 3 times on SQL errors with self-correction</div></div>
+    <div class="section-label">Supplier Portal</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">/supplier/:id route — clean supplier-facing view, no internal metrics, shows shared ad-hoc reports</div></div>
+    <div class="section-label">Deployment</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Cloud Run deployment — single container serving React + FastAPI + agent pipeline</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Multi-stage Dockerfile — Node build stage + Python serve stage</div></div>
+    <div class="section-label">Bug Fixes</div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Run ID mismatch — thread_id IS run_id throughout the pipeline</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Initial BigQuery status write — polling works from first request</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Validate node scope-awareness — ground truth matches report scope exactly</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Ad-hoc pre-processor — handles free-form SQL correctly</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Cloud Run agent module import — resolved at container startup not in thread</div></div>
+    <div class="item"><span class="tick">✓</span><div class="item-text">Confidence display — falls back to reportJSON when agent_runs has null due to streaming buffer</div></div>
+  </div>
+</div>
+
+<!-- Phase 6 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge planned">Planned</span>
+    <span class="phase-title">Phase 6 — Multi-Agent</span>
+    <span class="phase-sub">Parallel execution · Specialised agents · Semantic clustering</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">○</span><div class="item-text">Router agent — classifies incoming report requests and dispatches to specialised agents</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Specialised agents — separate agents for weekly business, monthly supplier, ad-hoc, and NL queries</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Parallel execution — run all 20 supplier reports simultaneously instead of sequentially</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Vertex AI NLP — semantic clustering of customer comments and return reasons across the portfolio</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Agent orchestration dashboard — live view of all running agents, parallelism, and queue depth</div></div>
+  </div>
+</div>
+
+<!-- Phase 7 -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge planned">Planned</span>
+    <span class="phase-title">Phase 7 — Supplier Portal</span>
+    <span class="phase-sub">Auth · Row-level security · Self-serve</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">○</span><div class="item-text">Firebase Authentication — suppliers log in directly at /supplier/:id without gcloud proxy</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Row-level security — each supplier can only see their own data, enforced at API level</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Supplier self-serve — suppliers can request ad-hoc reports on their own data</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Notification system — email or Slack alert when a new report is shared with a supplier</div></div>
+    <div class="item"><span class="tick">○</span><div class="item-text">Mobile-responsive supplier view</div></div>
+  </div>
+</div>
+
+<!-- Known issues -->
+<div class="phase">
+  <div class="phase-header">
+    <span class="badge inprogress">Known Issues</span>
+    <span class="phase-title">Pending Fixes</span>
+    <span class="phase-sub">Non-blocking for PoC</span>
+  </div>
+  <div class="items">
+    <div class="item"><span class="tick">⚠</span><div class="item-text">agent_runs UPDATE fails after publish due to BigQuery streaming buffer<span>Cosmetic only — report is published correctly. Fix: use INSERT with new row instead of UPDATE, or add delay before UPDATE in publish.py</span></div></div>
+    <div class="item"><span class="tick">⚠</span><div class="item-text">Dashboard load time on Cloud Run is 6–12 seconds<span>Sequential BigQuery queries. Fix: run queries in parallel with asyncio. Worth doing before production.</span></div></div>
+    <div class="item"><span class="tick">⚠</span><div class="item-text">Cold start on Cloud Run adds 5–15 seconds to first request<span>Fix: set --min-instances 1 (~$5–10/month extra)</span></div></div>
+    <div class="item"><span class="tick">⚠</span><div class="item-text">requirements.txt is unpinned — versions may drift between deployments<span>Fix: run pip freeze after confirming working environment and pin all versions</span></div></div>
+  </div>
+</div>
+
+</body>
+</html>
