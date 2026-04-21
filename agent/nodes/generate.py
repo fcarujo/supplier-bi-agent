@@ -15,10 +15,12 @@ Two modes driven by audience:
                 Layer 2: category drill-down — which categories are above benchmark
                 Layer 3: SKU-level specifics — which SKUs are driving rates,
                          what customers are saying, concrete call to action per SKU
+                Layer 4: Customer Voice — exhaustive comment intelligence for
+                         problem SKUs from sku_comment_intelligence table
 
 Output:
   report_narrative — human-readable markdown report
-  report_json      — structured JSON for Looker Studio and BigQuery storage
+  report_json      — structured JSON for BigQuery storage
 """
 
 import json
@@ -39,6 +41,63 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "metadata.yaml"
 def _load_config() -> dict:
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f)
+
+
+# ── Comment intelligence loader ───────────────────────────────────────────────
+
+def _load_comment_intelligence(supplier_id: str) -> list:
+    """
+    Loads this month's comment intelligence for the supplier from BigQuery.
+    Returns empty list if no data available — report still generates without it.
+    """
+    try:
+        from google.cloud import bigquery
+        config  = _load_config()
+        project = config["project"]
+        dataset = config["dataset"]
+        client  = bigquery.Client(project=project)
+
+        analysis_month = date.today().replace(day=1).isoformat()
+
+        rows = list(client.query(f"""
+            SELECT
+                productSKU,
+                productCategory,
+                skuIncidentRate,
+                catIncidentRate,
+                skuReturnRate,
+                catReturnRate,
+                maxDeviation,
+                incidentCommentCount,
+                returnCommentCount,
+                incidentThemes,
+                returnThemes,
+                rootCauses,
+                improvements,
+                confidence
+            FROM `{project}.{dataset}.sku_comment_intelligence`
+            WHERE supplierID = '{supplier_id}'
+              AND analysisMonth = '{analysis_month}'
+            ORDER BY maxDeviation DESC
+        """).result())
+
+        intelligence = []
+        for row in rows:
+            d = dict(row)
+            for field in ["incidentThemes", "returnThemes", "rootCauses", "improvements"]:
+                if d.get(field) and isinstance(d[field], str):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except Exception:
+                        d[field] = []
+            intelligence.append(d)
+
+        print(f"  [generate] Loaded comment intelligence for {len(intelligence)} SKUs")
+        return intelligence
+
+    except Exception as e:
+        print(f"  [generate] WARNING — could not load comment intelligence: {e}")
+        return []
 
 
 # ── Business overview report generator ───────────────────────────────────────
@@ -120,6 +179,9 @@ Write the full report following the structure above."""
 
     return response.content[0].text.strip()
 
+
+# ── Supplier account report generator ────────────────────────────────────────
+
 def generate_supplier_report(
     client:      Anthropic,
     analysis:    dict,
@@ -129,10 +191,9 @@ def generate_supplier_report(
     """
     LLM call 4b — generate supplier account narrative.
     For both the account manager and the supplier directly.
-    Three-layer structure: context → category drill-down → SKU specifics.
+    Includes Customer Voice section from comment intelligence if available.
     """
-
-    # Extract supplier name from analysis for personalisation
+    # Extract supplier name
     supplier_name = supplier_id
     by_supplier = analysis.get("by_supplier", [])
     if isinstance(by_supplier, list):
@@ -144,6 +205,81 @@ def generate_supplier_report(
         sup_data = by_supplier.get(supplier_id, {})
         supplier_name = sup_data.get("supplierName", supplier_id)
 
+    # Load comment intelligence for this supplier
+    comment_intelligence = _load_comment_intelligence(supplier_id)
+
+    # Format comment intelligence for the prompt
+    ci_section = ""
+    if comment_intelligence:
+        ci_section = "\n\n## COMMENT INTELLIGENCE DATA\n"
+        ci_section += "The following is exhaustive analysis of all customer comments for problem SKUs.\n"
+        ci_section += "Use this data to write the Customer Voice section of the report.\n\n"
+        for sku_intel in comment_intelligence:
+            ci_section += f"### SKU {sku_intel['productSKU']} ({sku_intel['productCategory']})\n"
+            ci_section += f"Incident rate: {sku_intel['skuIncidentRate']}% vs {sku_intel['catIncidentRate']}% category avg\n"
+            ci_section += f"Return rate: {sku_intel['skuReturnRate']}% vs {sku_intel['catReturnRate']}% category avg\n"
+            ci_section += f"Max deviation: {sku_intel['maxDeviation']}pp above category average\n"
+            ci_section += f"Comments analysed: {sku_intel['incidentCommentCount']} incident, {sku_intel['returnCommentCount']} return\n"
+            ci_section += f"Analysis confidence: {sku_intel['confidence']:.2f}\n\n"
+
+            if sku_intel.get("incidentThemes"):
+                ci_section += "**Incident themes:**\n"
+                for t in sku_intel["incidentThemes"]:
+                    ci_section += f"- {t['theme']} (frequency: {t['frequency']}, severity: {t['severity']})\n"
+                    ci_section += f"  Evidence: {t['evidence']}\n"
+
+            if sku_intel.get("returnThemes"):
+                ci_section += "\n**Return themes:**\n"
+                for t in sku_intel["returnThemes"]:
+                    ci_section += f"- {t['theme']} (frequency: {t['frequency']}, severity: {t['severity']})\n"
+                    ci_section += f"  Evidence: {t['evidence']}\n"
+
+            if sku_intel.get("rootCauses"):
+                ci_section += "\n**Root causes:**\n"
+                for c in sku_intel["rootCauses"]:
+                    ci_section += f"- [{c['category'].upper()} — {c['confidence']} confidence] {c['cause']}\n"
+
+            if sku_intel.get("improvements"):
+                ci_section += "\n**Recommended improvements:**\n"
+                for i in sku_intel["improvements"]:
+                    ci_section += f"- Priority {i['priority']} [{i['effort']} effort]: {i['action']}\n"
+                    ci_section += f"  Expected impact: {i['expected_impact']}\n"
+
+            ci_section += "\n---\n"
+
+    # Build the customer voice section instruction
+    cv_instruction = ""
+    if comment_intelligence:
+        cv_instruction = """
+## Customer Voice — Problem SKU Analysis
+This section uses exhaustive analysis of all customer comments for problem SKUs.
+For EACH SKU in the comment intelligence data:
+
+### [SKU code] — [Category] — [deviation]pp above category average
+**What customers are reporting:**
+Synthesise the incident and return themes into clear customer experience statements.
+Group by severity. Quote or paraphrase specific evidence where it strengthens the point.
+
+**Root causes identified:**
+List root causes with confidence level and category (packaging/product_quality/listing_accuracy/fulfilment).
+
+**Improvement actions:**
+Reproduce the prioritised improvement actions from the comment intelligence.
+Add any additional context from the quantitative analysis.
+
+**Impact if resolved:**
+Calculate the approximate incident/return rate reduction and cost saving
+if this SKU returned to category average performance.
+
+"""
+    else:
+        cv_instruction = """
+## Customer Voice
+No comment intelligence data available for this reporting period.
+Note that comment analysis runs monthly and will be available from next period.
+
+"""
+
     system_prompt = f"""You are generating a supplier performance account report for {supplier_name}.
 This report is read by both the account manager and the supplier directly.
 Write in clear, professional language that is direct but constructive.
@@ -151,52 +287,45 @@ Write in clear, professional language that is direct but constructive.
 Structure the report exactly as follows — use these markdown headers:
 
 ## Account Summary — {supplier_name}
-Report period and 2-3 sentence summary of this supplier's overall performance.
-Lead with where they stand vs benchmark.
+Report period and 2-3 sentence summary of overall performance vs benchmark.
 
 ## Performance vs Benchmark
-How does this supplier compare to:
-- Category average incident rate
-- Tier average incident rate
-- Overall portfolio average
-Use a simple table: Metric | This Supplier | Category Average | Tier Average
+Simple table: Metric | This Supplier | Category Average | Portfolio Average
+Include: incident rate, return rate, resolution cost.
 
 ## Category Performance
 For EACH category this supplier operates in:
 ### [Category Name]
-- Incident rate for this category vs portfolio average for this category
-- Primary incident types driving the rate (with percentages)
+- Incident rate vs portfolio average for this category
+- Primary incident types (with percentages)
 - Return rate and primary return reasons
-- Whether this is above or below benchmark
+- Above or below benchmark verdict
 
 ## Problematic SKUs — Deep Dive
-For each category that is above benchmark, identify the specific SKUs driving it.
+For each category above benchmark, identify specific SKUs driving it.
 For EACH problematic SKU:
 ### SKU [code] — [category]
-- Incident rate for this SKU
-- Most common incident types reported by customers
-- What customers are saying (synthesise from incident types and return reasons)
-- Resolution cost impact
+- Incident rate, most common incident types, resolution cost impact
 - Specific call to action
-
+{cv_instruction}
 ## Improvement Plan
 Numbered priority actions. Most impactful first.
 For EACH action:
 **Action [N]: [title]**
 - What: specific action required
-- Why: data that justifies this action (include numbers)
+- Why: data that justifies this (include numbers)
 - Target: which SKU/category/process
 - Expected impact: what improvement is expected
 
 ## Positive Signals
-Any areas where this supplier is performing well or improving.
-Always include at least one — constructive tone is important.
+Areas where this supplier is performing well. Always include at least one.
 
 RULES:
-- Every claim must be backed by a number from the analysis
+- Every claim must be backed by a number from the analysis or comment intelligence
 - Name SKUs explicitly — never say "some SKUs" if you have the data
 - The improvement plan must be actionable — specific enough for the supplier to act on
-- Tone: direct, professional, constructive — not punitive"""
+- Tone: direct, professional, constructive — not punitive
+- If comment intelligence is provided, use it extensively in the Customer Voice section"""
 
     user_prompt = f"""Generate a supplier account performance report for {supplier_name} ({supplier_id}).
 Report type: {report_type}
@@ -204,9 +333,10 @@ Report date: {date.today().isoformat()}
 
 Analysis data:
 {json.dumps(analysis, indent=2, default=str)}
-
+{ci_section}
 Write the full report following the structure above.
-Be specific — name SKUs, categories, and use numbers throughout."""
+Be specific — name SKUs, categories, and use numbers throughout.
+If comment intelligence data is provided, use it fully in the Customer Voice section."""
 
     for attempt in range(3):
         try:
@@ -241,35 +371,27 @@ def build_report_json(
     supplier_id: Optional[str],
     run_id:      Optional[str],
 ) -> dict:
-    """
-    Build the structured JSON version of the report for BigQuery storage
-    and Looker Studio consumption.
-    """
     return {
-        "reportID":        run_id,
-        "reportType":      report_type,
-        "audience":        audience,
-        "supplierID":      supplier_id,
-        "reportDate":      date.today().isoformat(),
-        "confidence":      analysis.get("confidence"),
-        "flags":           analysis.get("flags", []),
-        "overallMetrics":  analysis.get("overall_metrics", {}),
-        "topIssues":       analysis.get("top_issues", []),
-        "byCategory":      analysis.get("by_category", []),
-        "bySupplier":      analysis.get("by_supplier", []),
+        "reportID":           run_id,
+        "reportType":         report_type,
+        "audience":           audience,
+        "supplierID":         supplier_id,
+        "reportDate":         date.today().isoformat(),
+        "confidence":         analysis.get("confidence"),
+        "flags":              analysis.get("flags", []),
+        "overallMetrics":     analysis.get("overall_metrics", {}),
+        "topIssues":          analysis.get("top_issues", []),
+        "byCategory":         analysis.get("by_category", []),
+        "bySupplier":         analysis.get("by_supplier", []),
         "improvementActions": analysis.get("improvement_actions", []),
-        "anomalies":       analysis.get("anomalies", []),
-        "narrative":       narrative,
+        "anomalies":          analysis.get("anomalies", []),
+        "narrative":          narrative,
     }
 
 
 # ── Output validator ──────────────────────────────────────────────────────────
 
 def validate_report(narrative: str, report_json: dict) -> list:
-    """
-    Basic validation of the generated report.
-    Returns list of issues — empty means report is valid.
-    """
     issues = []
 
     if len(narrative) < 500:
@@ -281,7 +403,7 @@ def validate_report(narrative: str, report_json: dict) -> list:
     ]
     required_sections_supplier = [
         "Account Summary", "Performance vs Benchmark",
-        "Category Performance", "Improvement Plan"
+        "Category Performance", "Improvement"
     ]
 
     audience = report_json.get("audience", "business")

@@ -549,6 +549,101 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
 }
 
 // ── New Report ────────────────────────────────────────────────────────────────
+const PIPELINE_STEPS = [
+  { id: "discover",  label: "Discover",  desc: "Selecting data tables",          duration: 8  },
+  { id: "pull",      label: "Pull",      desc: "Executing BigQuery queries",      duration: 35 },
+  { id: "analyse",   label: "Analyse",   desc: "Processing & scoring data",       duration: 40 },
+  { id: "generate",  label: "Generate",  desc: "Writing report narrative",        duration: 50 },
+  { id: "validate",  label: "Validate",  desc: "Checking against ground truth",   duration: 15 },
+  { id: "review",    label: "Review",    desc: "Applying policy rules",           duration: 5  },
+  { id: "publish",   label: "Publish",   desc: "Saving approved report",          duration: 5  },
+];
+
+function PipelineProgress({ startTime, status }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!startTime) return;
+    const iv = setInterval(() => setElapsed(Math.floor((Date.now() - startTime) / 1000)), 500);
+    return () => clearInterval(iv);
+  }, [startTime]);
+
+  const TERMINAL = ["pending_review","pending_publish","approved","rejected","escalated","failed","completed"];
+  const done = TERMINAL.includes(status);
+
+  // Work out which step we're on based on elapsed time
+  let cumulative = 0;
+  let activeIdx = 0;
+  for (let i = 0; i < PIPELINE_STEPS.length; i++) {
+    if (elapsed >= cumulative) activeIdx = i;
+    cumulative += PIPELINE_STEPS[i].duration;
+  }
+  if (done) activeIdx = PIPELINE_STEPS.length - 1;
+
+  const totalEstimated = PIPELINE_STEPS.reduce((s, n) => s + n.duration, 0);
+  const progress = done ? 100 : Math.min((elapsed / totalEstimated) * 100, 95);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <div style={{ padding: "20px 0" }}>
+      {/* Progress bar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: C.muted }}>Pipeline progress</span>
+        <span style={{ fontSize: 12, color: C.muted, fontFamily: "monospace" }}>{timeStr} elapsed</span>
+      </div>
+      <div style={{ width: "100%", height: 3, background: "rgba(255,255,255,0.08)", borderRadius: 2, marginBottom: 24, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${progress}%`, background: done ? C.green : C.blue, borderRadius: 2, transition: "width 0.8s ease" }} />
+      </div>
+
+      {/* Steps */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {PIPELINE_STEPS.map((step, i) => {
+          const isActive  = !done && i === activeIdx;
+          const isComplete = done ? true : i < activeIdx;
+          const isPending = !isComplete && !isActive;
+
+          return (
+            <div key={step.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 10px", borderRadius: 6, background: isActive ? "rgba(96,165,250,0.08)" : "transparent", border: isActive ? `1px solid rgba(96,165,250,0.2)` : "1px solid transparent", transition: "all 0.3s" }}>
+              {/* Icon */}
+              <div style={{ width: 20, height: 20, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isComplete ? "rgba(34,197,94,0.15)" : isActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.05)", border: `1px solid ${isComplete ? C.green : isActive ? C.blue : "rgba(255,255,255,0.1)"}` }}>
+                {isComplete
+                  ? <span style={{ fontSize: 11, color: C.green }}>✓</span>
+                  : isActive
+                    ? <div style={{ width: 8, height: 8, borderRadius: "50%", border: `1.5px solid ${C.blue}`, borderTopColor: "transparent", animation: "spin 0.7s linear infinite" }} />
+                    : <span style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>○</span>
+                }
+              </div>
+
+              {/* Label */}
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: isActive ? 600 : 400, color: isComplete ? "#94a3b8" : isActive ? C.text : "rgba(255,255,255,0.3)" }}>
+                  {step.label}
+                </span>
+                {isActive && (
+                  <span style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{step.desc}</span>
+                )}
+              </div>
+
+              {/* Step number */}
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.15)", fontFamily: "monospace" }}>{i + 1}/{PIPELINE_STEPS.length}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {done && (
+        <div style={{ marginTop: 16, padding: "10px 14px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: C.green }}>✓</span>
+          <span style={{ fontSize: 13, color: C.green, fontWeight: 600 }}>Pipeline complete in {timeStr}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NewReport({onCreated}) {
   const [suppliers,setSuppliers] = useState([]);
   const [reportType,setReportType] = useState("adhoc_business");
@@ -558,6 +653,7 @@ function NewReport({onCreated}) {
   const [runID,setRunID] = useState(null);
   const [runData,setRunData] = useState(null);
   const [status,setStatus]   = useState(null);
+  const [startTime,setStartTime] = useState(null);
   const [error,setError]     = useState(null);
   const [sharing,setSharing] = useState(false);
   const pollRef = useRef(null);
@@ -566,16 +662,16 @@ function NewReport({onCreated}) {
 
   const isSupplier = reportType.includes("supplier");
   const isReady    = status&&!["running","starting"].includes(status);
+  const TERMINAL   = ["pending_review","pending_publish","approved","rejected","escalated","failed","completed"];
 
   const handleSubmit = async () => {
     if (!goal.trim()||(isSupplier&&!supplierID)) return;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    setRunning(true); setError(null); setStatus("starting"); setRunData(null); setRunID(null);
+    setRunning(true); setError(null); setStatus("starting"); setRunData(null); setRunID(null); setStartTime(Date.now());
     try {
       const res = await apiFetch("/api/runs",{method:"POST",body:JSON.stringify({reportType,supplierID:isSupplier?supplierID:null,goal})});
       const newRunID = res.runID;
       setRunID(newRunID); setStatus("running");
-      const TERMINAL = ["pending_review","pending_publish","approved","rejected","escalated","failed","completed"];
       pollRef.current = setInterval(async()=>{
         try {
           const s = await apiFetch(`/api/runs/${newRunID}/status`);
@@ -600,8 +696,6 @@ function NewReport({onCreated}) {
     } catch(e){ setError(e.message); } finally { setSharing(false); }
   };
 
-  const statusLabels = {starting:"Initialising...",running:"Running agent pipeline...",pending_review:"Ready for review — results below",pending_publish:"Auto-approved — publishing",approved:"Published",rejected:"Rejected",escalated:"Escalated — check queue",failed:"Pipeline failed"};
-
   return (
     <div style={{maxWidth:700}}>
       <div style={{marginBottom:24}}>
@@ -614,7 +708,7 @@ function NewReport({onCreated}) {
       <Card style={{display:"flex",flexDirection:"column",gap:16,marginBottom:24}}>
         <div>
           <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Report type</label>
-          <select value={reportType} onChange={e=>setReportType(e.target.value)} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13}}>
+          <select value={reportType} onChange={e=>setReportType(e.target.value)} disabled={running} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13,opacity:running?0.5:1}}>
             <option value="adhoc_business">Ad-hoc Business Overview</option>
             <option value="adhoc_supplier">Ad-hoc Supplier Account</option>
           </select>
@@ -622,7 +716,7 @@ function NewReport({onCreated}) {
         {isSupplier&&(
           <div>
             <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Supplier</label>
-            <select value={supplierID} onChange={e=>setSupplierID(e.target.value)} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13}}>
+            <select value={supplierID} onChange={e=>setSupplierID(e.target.value)} disabled={running} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13,opacity:running?0.5:1}}>
               <option value="">Select a supplier...</option>
               {suppliers.map(s=><option key={s.supplierID} value={s.supplierID}>{s.supplierName} ({s.supplierID})</option>)}
             </select>
@@ -630,19 +724,17 @@ function NewReport({onCreated}) {
         )}
         <div>
           <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Report goal</label>
-          <textarea value={goal} onChange={e=>setGoal(e.target.value)} placeholder="Describe what you need, e.g. Analyse SUP002 incident trends last 6 months vs previous 6 months, broken down by category and SKU..." rows={4} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"10px 12px",fontSize:13,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}} />
+          <textarea value={goal} onChange={e=>setGoal(e.target.value)} disabled={running} placeholder="Describe what you need, e.g. Analyse SUP002 incident trends last 6 months vs previous 6 months, broken down by category and SKU..." rows={4} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"10px 12px",fontSize:13,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",opacity:running?0.5:1}} />
         </div>
         <button onClick={handleSubmit} disabled={running||!goal.trim()||(isSupplier&&!supplierID)} style={{background:running?"rgba(255,255,255,0.06)":"rgba(96,165,250,0.2)",border:`1px solid ${running?C.border:C.blue}`,color:running?C.muted:C.blue,borderRadius:7,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:running?"not-allowed":"pointer",opacity:(running||!goal.trim()||(isSupplier&&!supplierID))?0.5:1}}>
-          {running?"Running...":"Run Report"}
+          {running?"Running pipeline...":"Run Report"}
         </button>
 
-        {status&&(
-          <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,0.03)",borderRadius:8}}>
-            {running&&<div style={{width:12,height:12,border:`2px solid ${C.blue}`,borderTop:"2px solid transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/>}
-            <div>
-              <div style={{fontSize:13,color:C.text}}>{statusLabels[status]||status}</div>
-              {runID&&<div style={{fontSize:11,color:C.muted,fontFamily:"monospace",marginTop:2}}>Run ID: {runID.slice(0,16)}...</div>}
-            </div>
+        {/* Pipeline progress — shown while running or just finished */}
+        {(running || isReady) && startTime && (
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginTop:4}}>
+            <PipelineProgress startTime={startTime} status={status} />
+            {runID && <div style={{fontSize:11,color:"rgba(255,255,255,0.15)",fontFamily:"monospace",marginTop:8}}>Run ID: {runID}</div>}
           </div>
         )}
       </Card>
@@ -655,7 +747,6 @@ function NewReport({onCreated}) {
             <div style={{fontSize:12,color:"#86efac"}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · {runData.policyDecision?.replace(/_/g," ")}</div>
           </div>
 
-          {/* Report narrative preview */}
           <Card style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>Report Narrative</div>
             <div style={{fontSize:13,lineHeight:1.8,color:"#cbd5e1",whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif",maxHeight:400,overflowY:"auto"}}>
@@ -663,7 +754,6 @@ function NewReport({onCreated}) {
             </div>
           </Card>
 
-          {/* Sharing decision */}
           <Card>
             <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:12}}>What would you like to do with this report?</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>

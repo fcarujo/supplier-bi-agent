@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -140,8 +141,10 @@ def get_queue():
             p.runID, p.reportType, p.audience, p.supplierID,
             p.queuedAt, p.status, p.confidence, p.policyDecision,
             p.validationPassed, p.validationFailed, p.hallucinationFlags,
-            p.reportNarrative, p.errors
+            p.reportNarrative, p.errors,
+            a.flags
         FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports` p
+        LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.agent_runs` a ON p.runID = a.runID
         WHERE p.status = 'pending'
         ORDER BY p.queuedAt DESC
         LIMIT 50
@@ -150,12 +153,7 @@ def get_queue():
     results = []
     for row in rows:
         d = _row_to_dict(row)
-        run_rows = list(client.query(f"""
-            SELECT flags, errors FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
-            WHERE runID = '{d["runID"]}' LIMIT 1
-        """).result())
-        if run_rows:
-            d["flags"] = _safe_json(_row_to_dict(run_rows[0]).get("flags")) or []
+        d["flags"] = _safe_json(d.get("flags")) or []
         errors = d.get("errors") or []
         if isinstance(errors, str):
             try:
@@ -383,86 +381,91 @@ def get_business_dashboard(
     order_filter = _build_date_filter(date_from, date_to)
     inc_filter   = _build_date_filter(date_from, date_to, "o")
 
-    sc = list(client.query(f"""
-        SELECT
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(SUM(grossRevenue), 2)                                           AS total_gross_revenue,
-            ROUND(SUM(netRevenue), 2)                                             AS total_net_revenue,
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
-            ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct,
-            ROUND(SUM(CASE WHEN hasReturn   THEN grossRevenue ELSE 0 END), 2)     AS returned_revenue
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE {order_filter}
-    """).result())[0]
+    def _q(sql):
+        return list(client.query(sql).result())
 
-    res_cost = list(client.query(f"""
-        SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE {inc_filter}
-    """).result())[0]
+    # Run all queries in parallel — cuts load time from ~10s to ~2s
+    with ThreadPoolExecutor(max_workers=7) as ex:
+        f_sc = ex.submit(_q, f"""
+            SELECT
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(SUM(grossRevenue), 2)                                           AS total_gross_revenue,
+                ROUND(SUM(netRevenue), 2)                                             AS total_net_revenue,
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct,
+                ROUND(SUM(CASE WHEN hasReturn   THEN grossRevenue ELSE 0 END), 2)     AS returned_revenue
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE {order_filter}
+        """)
+        f_res_cost = ex.submit(_q, f"""
+            SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE {inc_filter}
+        """)
+        f_trend = ex.submit(_q, f"""
+            SELECT
+                FORMAT_DATE('%Y-%m', orderDate)                                       AS month,
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(SUM(grossRevenue), 2)                                           AS gross_revenue,
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE {order_filter}
+            GROUP BY month ORDER BY month ASC
+        """)
+        f_res_trend = ex.submit(_q, f"""
+            SELECT
+                FORMAT_DATE('%Y-%m', o.orderDate)                                       AS month,
+                ROUND(SUM(o.grossRevenue), 2)                                           AS gross_revenue,
+                ROUND(SUM(i.resolutionCost), 2)                                         AS resolution_cost,
+                ROUND(SAFE_DIVIDE(SUM(i.resolutionCost), SUM(o.grossRevenue)) * 100, 2) AS resolution_cost_pct
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders` o
+            LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.incidents` i ON i.orderID = o.orderID
+            WHERE {inc_filter}
+            GROUP BY month ORDER BY month ASC
+        """)
+        f_suppliers = ex.submit(_q, f"""
+            SELECT
+                o.supplierID, s.supplierName, s.supplierTier,
+                COUNT(o.orderID)                                                      AS total_orders,
+                ROUND(AVG(CASE WHEN o.hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)   AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN o.hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)   AS return_rate_pct,
+                ROUND(SUM(CASE WHEN o.hasReturn THEN o.grossRevenue ELSE 0 END), 2)   AS returned_revenue
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders` o
+            LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.suppliers` s ON o.supplierID = s.supplierID
+            WHERE {order_filter}
+            GROUP BY o.supplierID, s.supplierName, s.supplierTier
+            ORDER BY incident_rate_pct DESC LIMIT 10
+        """)
+        f_categories = ex.submit(_q, f"""
+            SELECT
+                productCategory,
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE {order_filter}
+            GROUP BY productCategory ORDER BY incident_rate_pct DESC
+        """)
+        f_res_mix = ex.submit(_q, f"""
+            SELECT
+                i.incidentResolution,
+                COUNT(i.incidentID)              AS total_incidents,
+                ROUND(SUM(i.resolutionCost), 2)  AS total_cost
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE {inc_filter}
+            GROUP BY i.incidentResolution ORDER BY total_incidents DESC
+        """)
 
-    trend = list(client.query(f"""
-        SELECT
-            FORMAT_DATE('%Y-%m', orderDate)                                       AS month,
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(SUM(grossRevenue), 2)                                           AS gross_revenue,
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
-            ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE {order_filter}
-        GROUP BY month ORDER BY month ASC
-    """).result())
-
-    res_trend = list(client.query(f"""
-        SELECT
-            FORMAT_DATE('%Y-%m', o.orderDate)                                       AS month,
-            ROUND(SUM(o.grossRevenue), 2)                                           AS gross_revenue,
-            ROUND(SUM(i.resolutionCost), 2)                                         AS resolution_cost,
-            ROUND(SAFE_DIVIDE(SUM(i.resolutionCost), SUM(o.grossRevenue)) * 100, 2) AS resolution_cost_pct
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders` o
-        LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.incidents` i ON i.orderID = o.orderID
-        WHERE {inc_filter}
-        GROUP BY month ORDER BY month ASC
-    """).result())
-
-    suppliers = list(client.query(f"""
-        SELECT
-            o.supplierID,
-            s.supplierName,
-            s.supplierTier,
-            COUNT(o.orderID)                                                      AS total_orders,
-            ROUND(AVG(CASE WHEN o.hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)   AS incident_rate_pct,
-            ROUND(AVG(CASE WHEN o.hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)   AS return_rate_pct,
-            ROUND(SUM(CASE WHEN o.hasReturn THEN o.grossRevenue ELSE 0 END), 2)   AS returned_revenue
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders` o
-        LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.suppliers` s ON o.supplierID = s.supplierID
-        WHERE {order_filter}
-        GROUP BY o.supplierID, s.supplierName, s.supplierTier
-        ORDER BY incident_rate_pct DESC LIMIT 10
-    """).result())
-
-    categories = list(client.query(f"""
-        SELECT
-            productCategory,
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
-            ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE {order_filter}
-        GROUP BY productCategory ORDER BY incident_rate_pct DESC
-    """).result())
-
-    res_mix = list(client.query(f"""
-        SELECT
-            i.incidentResolution,
-            COUNT(i.incidentID)              AS total_incidents,
-            ROUND(SUM(i.resolutionCost), 2)  AS total_cost
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE {inc_filter}
-        GROUP BY i.incidentResolution ORDER BY total_incidents DESC
-    """).result())
+    sc         = f_sc.result()[0]
+    res_cost   = f_res_cost.result()[0]
+    trend      = f_trend.result()
+    res_trend  = f_res_trend.result()
+    suppliers  = f_suppliers.result()
+    categories = f_categories.result()
+    res_mix    = f_res_mix.result()
 
     return {
         "scorecards": {
@@ -494,6 +497,7 @@ def get_supplier_dashboard(
     order_filter = _build_date_filter(date_from, date_to)
     inc_filter   = _build_date_filter(date_from, date_to, "o")
 
+    # Fetch supplier metadata first — if not found, fail fast before running queries
     sup_rows = list(client.query(f"""
         SELECT supplierID, supplierName, supplierTier, supplierRegion, categorySpeciality
         FROM `{GCP_PROJECT}.{BQ_DATASET}.suppliers`
@@ -503,136 +507,131 @@ def get_supplier_dashboard(
         raise HTTPException(status_code=404, detail=f"Supplier {supplier_id} not found")
     supplier = _row_to_dict(sup_rows[0])
 
-    sc = list(client.query(f"""
-        SELECT
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(SUM(grossRevenue), 2)                                           AS total_gross_revenue,
-            ROUND(SUM(productCost), 2)                                            AS total_product_cost,
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
-            ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct,
-            ROUND(SUM(CASE WHEN hasReturn   THEN grossRevenue ELSE 0 END), 2)     AS returned_revenue
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE supplierID = '{supplier_id}' AND {order_filter}
-    """).result())[0]
+    def _q(sql):
+        return list(client.query(sql).result())
 
-    res_cost = list(client.query(f"""
-        SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
-    """).result())[0]
+    # Run all remaining queries in parallel
+    with ThreadPoolExecutor(max_workers=11) as ex:
+        f_sc = ex.submit(_q, f"""
+            SELECT
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(SUM(grossRevenue), 2)                                           AS total_gross_revenue,
+                ROUND(SUM(productCost), 2)                                            AS total_product_cost,
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2)     AS return_rate_pct,
+                ROUND(SUM(CASE WHEN hasReturn   THEN grossRevenue ELSE 0 END), 2)     AS returned_revenue
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE supplierID = '{supplier_id}' AND {order_filter}
+        """)
+        f_res_cost = ex.submit(_q, f"""
+            SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
+        """)
+        f_bench = ex.submit(_q, f"""
+            SELECT
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2) AS portfolio_incident_rate,
+                ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2) AS portfolio_return_rate
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE {order_filter}
+        """)
+        f_bench_cost = ex.submit(_q, f"""
+            SELECT
+                ROUND(SUM(i.resolutionCost), 2)    AS portfolio_resolution_cost,
+                COUNT(DISTINCT i.supplierID)        AS supplier_count
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE {inc_filter}
+        """)
+        f_cat_inc = ex.submit(_q, f"""
+            SELECT
+                productCategory,
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE supplierID = '{supplier_id}' AND {order_filter}
+            GROUP BY productCategory ORDER BY incident_rate_pct DESC
+        """)
+        f_cat_ret = ex.submit(_q, f"""
+            SELECT
+                productCategory,
+                COUNT(orderID)                                                        AS total_orders,
+                ROUND(AVG(CASE WHEN hasReturn THEN 1.0 ELSE 0.0 END) * 100, 2)       AS return_rate_pct
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
+            WHERE supplierID = '{supplier_id}' AND {order_filter}
+            GROUP BY productCategory ORDER BY return_rate_pct DESC
+        """)
+        f_sku_inc = ex.submit(_q, f"""
+            SELECT
+                i.productSKU, i.productCategory, i.incidentType,
+                COUNT(i.incidentID)              AS total_incidents,
+                ROUND(SUM(i.resolutionCost), 2)  AS total_resolution_cost,
+                ROUND(AVG(i.resolutionCost), 2)  AS avg_resolution_cost,
+                ROUND(AVG(i.productRating), 2)   AS avg_product_rating
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
+            GROUP BY i.productSKU, i.productCategory, i.incidentType
+            ORDER BY total_incidents DESC LIMIT 100
+        """)
+        f_sku_ret = ex.submit(_q, f"""
+            SELECT
+                r.productSKU, r.productCategory, r.buyersRemorseReason,
+                COUNT(r.returnID)                AS total_returns,
+                ROUND(AVG(r.productRating), 2)   AS avg_product_rating
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.returns` r
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON r.orderID = o.orderID
+            WHERE r.supplierID = '{supplier_id}' AND {inc_filter}
+            GROUP BY r.productSKU, r.productCategory, r.buyersRemorseReason
+            ORDER BY total_returns DESC LIMIT 100
+        """)
+        f_ret_reasons = ex.submit(_q, f"""
+            SELECT
+                r.buyersRemorseReason,
+                COUNT(r.returnID)                AS total_returns,
+                ROUND(AVG(r.productRating), 2)   AS avg_product_rating
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.returns` r
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON r.orderID = o.orderID
+            WHERE r.supplierID = '{supplier_id}' AND {inc_filter}
+            GROUP BY r.buyersRemorseReason ORDER BY total_returns DESC
+        """)
+        f_inc_types = ex.submit(_q, f"""
+            SELECT
+                i.incidentType,
+                COUNT(i.incidentID)              AS total_incidents,
+                ROUND(SUM(i.resolutionCost), 2)  AS total_cost
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
+            GROUP BY i.incidentType ORDER BY total_incidents DESC
+        """)
+        f_res_mix = ex.submit(_q, f"""
+            SELECT
+                i.incidentResolution,
+                COUNT(i.incidentID)              AS total_incidents,
+                ROUND(SUM(i.resolutionCost), 2)  AS total_cost
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
+            INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
+            WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
+            GROUP BY i.incidentResolution ORDER BY total_incidents DESC
+        """)
+        f_reports = ex.submit(_q, f"""
+            SELECT reportNarrative, reportDate, confidence, approvedBy, approvedAt, reportType
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+            WHERE supplierID = '{supplier_id}' AND audience = 'supplier'
+            ORDER BY reportDate DESC LIMIT 5
+        """)
 
-    bench = list(client.query(f"""
-        SELECT
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2) AS portfolio_incident_rate,
-            ROUND(AVG(CASE WHEN hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2) AS portfolio_return_rate
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE {order_filter}
-    """).result())[0]
-
-    bench_cost = list(client.query(f"""
-        SELECT
-            ROUND(SUM(i.resolutionCost), 2)    AS portfolio_resolution_cost,
-            COUNT(DISTINCT i.supplierID)        AS supplier_count
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE {inc_filter}
-    """).result())[0]
+    sc         = f_sc.result()[0]
+    res_cost   = f_res_cost.result()[0]
+    bench      = f_bench.result()[0]
+    bench_cost = f_bench_cost.result()[0]
 
     portfolio_avg_res_cost = (
         float(bench_cost["portfolio_resolution_cost"] or 0) /
         max(float(bench_cost["supplier_count"] or 1), 1)
     )
-
-    cat_inc = list(client.query(f"""
-        SELECT
-            productCategory,
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)     AS incident_rate_pct
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE supplierID = '{supplier_id}' AND {order_filter}
-        GROUP BY productCategory ORDER BY incident_rate_pct DESC
-    """).result())
-
-    cat_ret = list(client.query(f"""
-        SELECT
-            productCategory,
-            COUNT(orderID)                                                        AS total_orders,
-            ROUND(AVG(CASE WHEN hasReturn THEN 1.0 ELSE 0.0 END) * 100, 2)       AS return_rate_pct
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.orders`
-        WHERE supplierID = '{supplier_id}' AND {order_filter}
-        GROUP BY productCategory ORDER BY return_rate_pct DESC
-    """).result())
-
-    sku_inc = list(client.query(f"""
-        SELECT
-            i.productSKU,
-            i.productCategory,
-            i.incidentType,
-            COUNT(i.incidentID)              AS total_incidents,
-            ROUND(SUM(i.resolutionCost), 2)  AS total_resolution_cost,
-            ROUND(AVG(i.resolutionCost), 2)  AS avg_resolution_cost,
-            ROUND(AVG(i.productRating), 2)   AS avg_product_rating
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
-        GROUP BY i.productSKU, i.productCategory, i.incidentType
-        ORDER BY total_incidents DESC LIMIT 100
-    """).result())
-
-    sku_ret = list(client.query(f"""
-        SELECT
-            r.productSKU,
-            r.productCategory,
-            r.buyersRemorseReason,
-            COUNT(r.returnID)                AS total_returns,
-            ROUND(AVG(r.productRating), 2)   AS avg_product_rating
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.returns` r
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON r.orderID = o.orderID
-        WHERE r.supplierID = '{supplier_id}' AND {inc_filter}
-        GROUP BY r.productSKU, r.productCategory, r.buyersRemorseReason
-        ORDER BY total_returns DESC LIMIT 100
-    """).result())
-
-    ret_reasons = list(client.query(f"""
-        SELECT
-            r.buyersRemorseReason,
-            COUNT(r.returnID)                AS total_returns,
-            ROUND(AVG(r.productRating), 2)   AS avg_product_rating
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.returns` r
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON r.orderID = o.orderID
-        WHERE r.supplierID = '{supplier_id}' AND {inc_filter}
-        GROUP BY r.buyersRemorseReason ORDER BY total_returns DESC
-    """).result())
-
-    inc_types = list(client.query(f"""
-        SELECT
-            i.incidentType,
-            COUNT(i.incidentID)              AS total_incidents,
-            ROUND(SUM(i.resolutionCost), 2)  AS total_cost
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
-        GROUP BY i.incidentType ORDER BY total_incidents DESC
-    """).result())
-
-    res_mix = list(client.query(f"""
-        SELECT
-            i.incidentResolution,
-            COUNT(i.incidentID)              AS total_incidents,
-            ROUND(SUM(i.resolutionCost), 2)  AS total_cost
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.incidents` i
-        INNER JOIN `{GCP_PROJECT}.{BQ_DATASET}.orders` o ON i.orderID = o.orderID
-        WHERE i.supplierID = '{supplier_id}' AND {inc_filter}
-        GROUP BY i.incidentResolution ORDER BY total_incidents DESC
-    """).result())
-
-    reports = list(client.query(f"""
-        SELECT reportNarrative, reportDate, confidence, approvedBy, approvedAt, reportType
-        FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
-        WHERE supplierID = '{supplier_id}' AND audience = 'supplier'
-        ORDER BY reportDate DESC LIMIT 5
-    """).result())
 
     return {
         "supplier_id": supplier_id,
@@ -649,14 +648,14 @@ def get_supplier_dashboard(
             "portfolio_return_rate":   float(bench["portfolio_return_rate"] or 0),
             "portfolio_avg_res_cost":  round(portfolio_avg_res_cost, 2),
         },
-        "cat_incident_rate": [_row_to_dict(r) for r in cat_inc],
-        "cat_return_rate":   [_row_to_dict(r) for r in cat_ret],
-        "sku_incidents":     [_row_to_dict(r) for r in sku_inc],
-        "sku_returns":       [_row_to_dict(r) for r in sku_ret],
-        "return_reasons":    [_row_to_dict(r) for r in ret_reasons],
-        "incident_types":    [_row_to_dict(r) for r in inc_types],
-        "resolution_mix":    [_row_to_dict(r) for r in res_mix],
-        "reports":           [_row_to_dict(r) for r in reports],
+        "cat_incident_rate": [_row_to_dict(r) for r in f_cat_inc.result()],
+        "cat_return_rate":   [_row_to_dict(r) for r in f_cat_ret.result()],
+        "sku_incidents":     [_row_to_dict(r) for r in f_sku_inc.result()],
+        "sku_returns":       [_row_to_dict(r) for r in f_sku_ret.result()],
+        "return_reasons":    [_row_to_dict(r) for r in f_ret_reasons.result()],
+        "incident_types":    [_row_to_dict(r) for r in f_inc_types.result()],
+        "resolution_mix":    [_row_to_dict(r) for r in f_res_mix.result()],
+        "reports":           [_row_to_dict(r) for r in f_reports.result()],
     }
 
 

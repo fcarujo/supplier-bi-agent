@@ -100,18 +100,41 @@ def publish_node(state: dict) -> dict:
         errors.append(error_msg)
 
     # ── Update agent_runs status ──────────────────────────────────────────────
+    # BigQuery streaming buffer does not support UPDATE immediately after INSERT.
+    # Insert a new row with status=approved instead — the status endpoint reads
+    # the most recent row so this correctly reflects the final state.
     try:
         bq_client = bigquery.Client(project=project)
-        bq_client.query(f"""
-            UPDATE `{project}.{dataset}.agent_runs`
-            SET status = 'approved',
-                gcsPath = '{gcs_path or ""}'
-            WHERE runID = '{run_id}'
-        """).result()
-        print(f"  [publish] agent_runs updated to approved")
+        errs = bq_client.insert_rows_json(
+            f"{project}.{dataset}.agent_runs",
+            [{
+                "runID":          run_id,
+                "reportType":     report_type,
+                "audience":       audience,
+                "supplierID":     supplier_id,
+                "status":         "approved",
+                "confidence":     state.get("confidence"),
+                "gcsPath":        gcs_path or "",
+                "completedAt":    datetime.now(timezone.utc).isoformat(),
+                "startedAt":      datetime.now(timezone.utc).isoformat(),
+                "reportDate":     date.today().isoformat(),
+                "policyDecision": "auto_approve",
+                "flags":          json.dumps(state.get("flags") or []),
+                "errors":         json.dumps(errors),
+                "selectedTables": json.dumps(state.get("selected_tables") or []),
+                "queries":        json.dumps(state.get("queries") or {}),
+                "rowCounts":      json.dumps(state.get("row_counts") or {}),
+                "pullValidation": json.dumps(state.get("pull_validation") or {}),
+                "goal":           state.get("goal", ""),
+            }]
+        )
+        if errs:
+            print(f"  [publish] WARNING — agent_runs status insert failed: {errs}")
+        else:
+            print(f"  [publish] agent_runs status inserted as approved")
 
     except Exception as e:
-        print(f"  [publish] WARNING — agent_runs update failed: {e}")
+        print(f"  [publish] WARNING — agent_runs status insert failed: {e}")
 
     print(f"  [publish] Complete")
 
