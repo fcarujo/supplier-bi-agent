@@ -1,6 +1,18 @@
 # Supplier Performance BI Agent
 
-An autonomous AI agent that generates, validates, and publishes supplier performance reports — with a human-in-the-loop review layer and a React control plane for account managers.
+An autonomous multi-agent BI system that generates, validates, and publishes supplier performance reports — with a human-in-the-loop review layer, a React control plane for account managers, and a Comment Intelligence layer that analyses customer feedback to surface actionable product and operations improvements.
+
+---
+
+## What it does
+
+The system serves two distinct audiences from the same data pipeline:
+
+**Business overview** — portfolio-level analysis across all suppliers. Incident rates, return rates, resolution costs, category and supplier rankings, trend detection. Runs weekly on a schedule.
+
+**Supplier account management** — one report per supplier, including a Customer Voice section that exhaustively analyses customer comments to identify exactly what is failing at the product and operations level, and what the supplier needs to fix. Runs monthly on a schedule, shareable directly with the supplier.
+
+Both report types flow through the same agent pipeline. The audience determines what data is exposed, how it is scoped, and what the generated narrative focuses on.
 
 ---
 
@@ -11,8 +23,18 @@ Orders / Incidents / Returns / Suppliers
               ↓
     BigQuery (supplier_bi dataset)
               ↓
-    LangGraph Agent Pipeline
-    discover → pull → analyse → generate → validate → review → publish
+    ┌─────────────────────────────────────┐
+    │  Agent Pipeline (LangGraph)         │
+    │  discover → pull → analyse →        │
+    │  generate → validate → review →     │
+    │  publish                            │
+    └─────────────────────────────────────┘
+              ↓
+    ┌─────────────────────────────────────┐
+    │  Comment Intelligence Agent         │
+    │  filter → analyse → store           │
+    │  (runs monthly, feeds generate)     │
+    └─────────────────────────────────────┘
               ↓
     Control Plane (FastAPI + React)
     Queue · Dashboards · New Report · Ask · Observability
@@ -22,83 +44,86 @@ Orders / Incidents / Returns / Suppliers
 
 ---
 
-## Pipeline Nodes
+## Agent Pipeline
+
+### Core nodes
 
 | Node | What it does |
 |---|---|
-| **discover** | Selects which BigQuery tables are needed. Template mode for scheduled reports, LLM mode for ad-hoc. Always forces `orders` table for incident rate calculations. |
-| **pull** | Generates and executes BigQuery SQL. Template SQL for scheduled reports, LLM-generated SQL for ad-hoc. Handles BOOL column constraints. |
-| **analyse** | Pre-processes query results into structured analysis. Ad-hoc aware — handles free-form SQL with period comparisons. Sets confidence score and flags. |
-| **generate** | Calls Claude Sonnet to write the full report narrative. Retry logic on 529 overload. |
-| **validate** | Compares reported metrics against BigQuery ground truth. Scope-aware — extracts date range and supplier from actual SQL queries run, not hardcoded defaults. |
-| **review** | Policy engine — auto-approves, routes to queue, or escalates based on confidence, hallucination flags, and pipeline errors. |
-| **publish** | Writes approved reports to GCS and `approved_reports` BigQuery table. |
+| **discover** | Selects which BigQuery tables are needed. Template mode for scheduled reports, LLM mode for ad-hoc. Always enforces `orders` table in code for incident rate calculations. |
+| **pull** | Generates and executes BigQuery SQL. Template SQL for scheduled, LLM-generated for ad-hoc. |
+| **analyse** | Pre-processes query results into structured analysis. Sets confidence score and flags. |
+| **generate** | Writes the full report narrative. For supplier reports, loads comment intelligence and injects a Customer Voice section. |
+| **validate** | Re-queries BigQuery independently to verify reported metrics against ground truth. Scope-aware date and supplier filtering. Flags deviations above 10% as potential hallucinations. |
+| **review** | Deterministic policy engine — auto-approves, routes to queue, or escalates based on confidence, hallucination flags, and validation results. No LLM involved. |
+| **publish** | Writes approved reports to GCS and the `approved_reports` BigQuery table. |
+
+### Comment Intelligence Agent
+
+A standalone monthly agent that analyses customer feedback for problem SKUs.
+
+**Filter** — For each supplier, identifies the top 5 SKUs where incident or return rate exceeds the category average by more than 1 percentage point. Requires a minimum of 20 orders in the 90-day analysis window to ensure statistical reliability. SKUs below this threshold are excluded.
+
+**Analyse** — For each flagged SKU, pulls every incident comment and return comment from the last 90 days. Calls Claude for exhaustive structured analysis:
+- Incident themes — recurring patterns with frequency, severity, and customer evidence
+- Return themes — recurring return reasons with frequency and evidence
+- Root causes — underlying failures categorised as packaging / product_quality / listing_accuracy / fulfilment
+- Improvements — specific prioritised actions with expected impact and effort rating
+
+**Store** — Writes structured intelligence to the `sku_comment_intelligence` BigQuery table.
+
+**Integration** — The generate node loads this month's intelligence for the supplier and injects it into the report. Supplier account reports include a **Customer Voice** section with per-SKU analysis grounded entirely in what customers actually said.
 
 ---
 
-## Report Types
+## SQL Strategy
 
-| Type | Audience | Cadence | Tables |
-|---|---|---|---|
-| `weekly_supplier_overview` | Business | Weekly | orders, incidents, returns, suppliers |
-| `monthly_supplier_account` | Supplier | Monthly | orders, incidents, returns, suppliers |
-| `adhoc_business` | Business | On demand | LLM-selected |
-| `adhoc_supplier` | Supplier | On demand | LLM-selected |
+**Scheduled reports** use pre-defined SQL templates stored in `metadata.yaml`. Zero LLM involvement in query generation — consistent, version-controlled, deterministic results on every run.
+
+**Ad-hoc reports** use LLM-generated SQL at runtime since the goal is open-ended. Always requires human review before publishing.
+
+---
+
+## Security Architecture
+
+Three independent layers — an attacker must bypass all three simultaneously.
+
+**Layer 1 — Input sanitiser:** Every goal string is scanned for prompt injection patterns before reaching the LLM. Detections are flagged to the audit trail.
+
+**Layer 2 — Column allowlist and SQL validator:** Every SQL query is validated before execution. No dangerous operations, no SELECT *, only allowed columns. Supplier-scoped reports have `WHERE supplierID = 'SUPXXX'` injected automatically. `netRevenue` and `customerID` are permanently blocked columns regardless of report type.
+
+**Layer 3 — IAM:** The service account has read-only access to the allowed dataset only. Even a malicious query that bypasses layers 1 and 2 is rejected at the infrastructure level.
 
 ---
 
 ## Control Plane
 
-### Tabs
-
-**Queue** — Pending reports awaiting human decision. Shows confidence, validation checks, hallucination flags. Click to open audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Option to share approved supplier reports with the supplier.
+**Queue** — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Option to share approved supplier reports with the supplier.
 
 **Dashboards**
-- *Business Overview* — 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers bar, category incident rate bar, resolution mix pie. Cross-filtering: click any chart to filter all others.
-- *Supplier Account* — Per-supplier drill-down with 2 scorecard rows (metrics + portfolio benchmarks), category charts, SKU incident & return tables, return reasons, incident type pie, resolution mix. Cross-filtering on category and incident type.
+- *Business Overview* — 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown, resolution mix. Cross-filtering on all charts.
+- *Supplier Account* — Metrics + portfolio benchmark scorecards, category charts, SKU incident & return tables, return reasons, incident type breakdown, resolution mix. Cross-filtering on category and incident type.
 
-**New Report** — Plain English goal → agent pipeline runs in background → page updates automatically when done → Internal Only or Share with Supplier buttons.
+**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion → Internal Only or Share with Supplier.
 
-**Ask** — Natural language → BigQuery SQL → answer table + SQL shown transparently. Auto-retry up to 3 times on SQL errors.
+**Ask** — Natural language → BigQuery SQL → answer table with SQL shown transparently. Auto-corrects SQL errors up to 3 times.
 
-**Observability** — Full run history with confidence, decisions, reviewer, and run IDs.
+**Observability** — Full run history with confidence scores, decisions, and reviewer names.
 
-### Supplier Portal
-
-Route `/supplier/:id` shows a clean supplier-facing view with their dashboard data and any approved reports shared with them. No internal metrics or governance UI.
+**Supplier Portal** — Route `/supplier/:id` shows a clean supplier-facing view with their dashboard data and any reports shared with them. No internal metrics, no governance UI.
 
 ---
 
-## Key Fixes — Phase 5
+## Data Layer
 
-| Fix | What was wrong | What was fixed |
-|---|---|---|
-| Run ID mismatch | `graph.py` generated a new `run_id` separate from `thread_id`. Browser polled `thread_id` but BigQuery had `run_id`. | `run_id = thread_id` throughout. |
-| No initial BigQuery status | Nothing written to `agent_runs` until pipeline finished. | Write `status = "running"` immediately at start. Write `status = "failed"` on exception. |
-| Status endpoint streaming delay | `agent_runs` UPDATE not visible immediately after streaming insert. | Status endpoint checks `pending_reports` first. |
-| Ad-hoc pre-processor reading 0 orders | Pre-processor assumed fixed column names. | Detect ad-hoc reports and pass raw data directly to LLM. |
-| Validate node wrong scope | Ground truth used all-supplier 30-day data regardless of report scope. | Extract date range and supplier from actual SQL queries run. |
-| supplierID case sensitivity | `sup002` got 0 rows. | Normalise to uppercase in `trigger_run`. |
-| SUM on BOOL columns | LLM generated `SUM(hasIncident)` which BigQuery rejects. | Added rule to pull node prompt. |
-| React polling stale run ID | Old `setInterval` kept firing from previous submissions. | Clear existing poll before starting new one. Use explicit terminal status list. |
-| `orders` table omitted for ad-hoc | LLM sometimes didn't select `orders`. | Enforce `orders` in code after LLM selection. |
-| Confidence showing 0% in UI | `agent_runs` confidence null due to BigQuery streaming buffer delay. | Fall back to `reportJSON.confidence` in `pending_reports`. |
-| Cloud Run `ModuleNotFoundError: agent` | Import ran inside a thread at request time. | Move import to module level with `sys.path.insert(0, "/app")`. |
-| Cloud Run requirements conflict | Pinned versions had conflicting sub-dependencies. | Remove version pins, let pip resolve compatible versions. |
+Synthetic supplier performance dataset — 500k+ orders across 20 suppliers, 7 product categories, 301 SKUs, 12 months of history. Appended daily.
 
----
-
-## GCP Infrastructure
-
-| Resource | Name |
-|---|---|
-| Project | `supplier-bi-agent-2025` |
-| Region | `europe-west2` |
-| BigQuery dataset | `supplier_bi` |
-| Cloud Run service | `supplier-bi-control-plane` |
-| GCS bucket (approved) | `supplier-bi-agent-2025-approved-reports` |
-| GCS bucket (raw) | `supplier-bi-agent-2025-raw-reports` |
-| Service account | `bi-agent@supplier-bi-agent-2025.iam.gserviceaccount.com` |
+Intentional signal patterns designed for the agents to detect:
+- One supplier has a sharp incident spike starting 3 months ago — early warning signal
+- Supplier-direct fulfilment has 4× the lost_item rate versus warehouse fulfilment
+- Budget price tier has 2× the return rate of premium
+- 5 preferred suppliers account for ~78% of order volume — absolute count vs rate distinction is critical
+- Customer comments enriched with product-specific context so comment intelligence has genuine signal to work with
 
 ---
 
@@ -107,66 +132,15 @@ Route `/supplier/:id` shows a clean supplier-facing view with their dashboard da
 | Table | Purpose |
 |---|---|
 | `orders` | Order-level data — revenue, incident flags, return flags |
-| `incidents` | Incident detail — type, resolution, cost, rating |
-| `returns` | Return detail — reason, resolution, rating |
+| `incidents` | Incident detail — type, resolution, cost, rating, customer comments |
+| `returns` | Return detail — reason, resolution, rating, customer comments |
 | `suppliers` | Supplier master — name, tier, region, category |
 | `agent_runs` | Pipeline run log — status, confidence, queries, flags |
 | `pending_reports` | Human review queue |
 | `approved_reports` | Published reports — internal and supplier-facing |
 | `validation_results` | Per-metric validation checks per run |
 | `human_decisions` | Reviewer decisions with reason and timestamp |
-
----
-
-## Local Development
-
-```bash
-# Start FastAPI backend
-cd ~/projects/supplier-bi-agent
-uvicorn control_plane.main:app --reload --port 8000
-
-# Start React frontend
-cd control_plane/frontend
-npm run dev
-# → http://localhost:5173
-```
-
-## Deploy to Cloud Run
-
-```bash
-cd ~/projects/supplier-bi-agent
-
-gcloud run deploy supplier-bi-control-plane \
-  --source . \
-  --region europe-west2 \
-  --project supplier-bi-agent-2025 \
-  --platform managed \
-  --no-allow-unauthenticated \
-  --set-env-vars GCP_PROJECT=supplier-bi-agent-2025,BQ_DATASET=supplier_bi,ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY .env | cut -d '=' -f2) \
-  --memory 1Gi \
-  --timeout 300
-```
-
-## Access deployed service
-
-```bash
-gcloud run services proxy supplier-bi-control-plane \
-  --region europe-west2 \
-  --project supplier-bi-agent-2025 \
-  --port 8081
-# → http://localhost:8081
-```
-
----
-
-## Cost Estimate (monthly at PoC scale)
-
-| Component | Cost |
-|---|---|
-| GCP infrastructure | ~$2–5 |
-| Anthropic API (scheduled reports) | ~$3–5 |
-| Anthropic API (ad-hoc + NL queries) | ~$3–5 |
-| **Total** | **~$8–15/month** |
+| `sku_comment_intelligence` | Monthly comment analysis — themes, root causes, improvements per flagged SKU |
 
 ---
 
@@ -175,28 +149,41 @@ gcloud run services proxy supplier-bi-control-plane \
 ```
 supplier-bi-agent/
 ├── agent/
-│   ├── graph.py              # LangGraph pipeline — run_id fix, initial BQ write
+│   ├── graph.py                  # LangGraph pipeline — AgentState, graph wiring
+│   ├── comment_intelligence.py   # Comment Intelligence Agent — monthly batch
 │   ├── nodes/
-│   │   ├── discover.py       # Table selection — forces orders table
-│   │   ├── pull.py           # SQL generation + execution
-│   │   ├── analyse.py        # Ad-hoc aware pre-processor
-│   │   ├── generate.py       # Report narrative generation
-│   │   ├── validate.py       # Scope-aware ground truth validation
-│   │   ├── review.py         # Policy engine
-│   │   └── publish.py        # GCS + BigQuery publish
+│   │   ├── discover.py           # Table selection — forces orders table
+│   │   ├── pull.py               # SQL generation + execution
+│   │   ├── analyse.py            # Ad-hoc aware pre-processor, confidence scoring
+│   │   ├── generate.py           # Report narrative + Customer Voice section
+│   │   ├── validate.py           # Scope-aware ground truth validation
+│   │   ├── review.py             # Policy engine — auto-approve / queue / escalate
+│   │   └── publish.py            # GCS + BigQuery publish
 │   └── config/
-│       ├── metadata.yaml     # Table schemas, SQL templates, allowed columns
-│       └── policies.yaml     # Auto-approve rules per report type
+│       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns
+│       └── policies.yaml         # Auto-approve rules per report type
 ├── control_plane/
-│   ├── main.py               # FastAPI — all endpoints + static file serving
-│   ├── requirements.txt      # Python dependencies (unpinned for compatibility)
-│   ├── Dockerfile            # Multi-stage: Node build + Python serve
-│   ├── .dockerignore
+│   ├── main.py                   # FastAPI — all endpoints, parallel queries
+│   ├── requirements.txt          # Python dependencies
+│   ├── Dockerfile                # Multi-stage: Node build + Python serve
 │   └── frontend/
 │       └── src/
-│           └── App.jsx       # Full React control plane UI
-├── Dockerfile                # Symlink → control_plane/Dockerfile
-├── .dockerignore             # Project-root ignore for Cloud Run builds
+│           └── App.jsx           # React control plane — all tabs + pipeline progress
+├── Dockerfile                    # Project-root entry for Cloud Run builds
 ├── .gitignore
-└── test_agent.py             # Integration tests (tests 4 and 5)
+└── test_agent.py                 # Integration tests
 ```
+
+---
+
+## Build Status
+
+| Phase | Status | Description |
+|---|---|---|
+| 1 — Data layer | ✅ Complete | BigQuery schema, synthetic data, daily append |
+| 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, SQL templates, security layer |
+| 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports |
+| 4 — Semantic control plane | ✅ Complete | Validation, policy engine, React audit UI |
+| 5 — Dashboards & deployment | ✅ Complete | React dashboards, ad-hoc, NL BI, Cloud Run |
+| 6 — Multi-agent | 🔄 In progress | Comment Intelligence Agent complete · Parallel Scheduler, Conversational Query Agent, Insight Agent pending |
+| 7 — Supplier portal | ⬜ Planned | Firebase Auth, row-level security, supplier self-serve |
