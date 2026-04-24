@@ -42,9 +42,6 @@ GCP_PROJECT = os.environ.get("GCP_PROJECT", "supplier-bi-agent-2025")
 BQ_DATASET  = os.environ.get("BQ_DATASET",  "supplier_bi")
 
 # ── Session store — in-memory, ephemeral ──────────────────────────────────────
-# Each session: { messages: [...], supplier_id: str|None, created_at: str }
-# Sessions are cleared when the Cloud Run instance restarts — this is by design.
-# Max 100 sessions to prevent memory bloat on long-running instances.
 _sessions: dict = {}
 MAX_SESSIONS = 100
 
@@ -100,7 +97,7 @@ def _row_to_dict(row):
                 "validatedAt", "approvedAt", "onboardingDate"]:
         if key in d and d[key] and hasattr(d[key], "isoformat"):
             d[key] = d[key].isoformat()
-    for key in ["reportDate", "orderDate"]:
+    for key in ["reportDate", "orderDate", "weekOf", "generatedAt"]:
         if key in d and d[key] and hasattr(d[key], "isoformat"):
             d[key] = d[key].isoformat()
     return d
@@ -685,56 +682,50 @@ def trigger_run(body: RunRequest):
     return {"runID": run_id, "status": "running"}
 
 
-# ── POST /api/ask/session — create a new conversation session ─────────────────
+# ── POST /api/ask/session ─────────────────────────────────────────────────────
 
 @app.post("/api/ask/session")
 def create_session(supplierID: Optional[str] = None):
-    """Create a new conversation session. Returns sessionID."""
     global _sessions
-
-    # Evict oldest session if at capacity
     if len(_sessions) >= MAX_SESSIONS:
         oldest = min(_sessions.items(), key=lambda x: x[1]["created_at"])
         del _sessions[oldest[0]]
-
     session_id = str(uuid.uuid4())
     _sessions[session_id] = {
-        "messages":    [],       # list of {role, content} for Claude
-        "exchanges":   [],       # list of {question, sql, data, rows} for UI
+        "messages":    [],
+        "exchanges":   [],
         "supplier_id": supplierID,
         "created_at":  datetime.now(timezone.utc).isoformat(),
     }
     return {"sessionID": session_id, "supplierID": supplierID}
 
 
-# ── DELETE /api/ask/session/{session_id} — clear a session ───────────────────
+# ── DELETE /api/ask/session/{session_id} ──────────────────────────────────────
 
 @app.delete("/api/ask/session/{session_id}")
 def delete_session(session_id: str):
-    """Clear a conversation session."""
     if session_id in _sessions:
         del _sessions[session_id]
     return {"sessionID": session_id, "deleted": True}
 
 
-# ── GET /api/ask/session/{session_id} — get session history ──────────────────
+# ── GET /api/ask/session/{session_id} ────────────────────────────────────────
 
 @app.get("/api/ask/session/{session_id}")
 def get_session(session_id: str):
-    """Get the conversation history for a session."""
     if session_id not in _sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     session = _sessions[session_id]
     return {
-        "sessionID":   session_id,
-        "supplierID":  session["supplier_id"],
-        "exchanges":   session["exchanges"],
-        "turn_count":  len(session["exchanges"]),
-        "created_at":  session["created_at"],
+        "sessionID":  session_id,
+        "supplierID": session["supplier_id"],
+        "exchanges":  session["exchanges"],
+        "turn_count": len(session["exchanges"]),
+        "created_at": session["created_at"],
     }
 
 
-# ── POST /api/ask — conversational NL query ───────────────────────────────────
+# ── POST /api/ask ─────────────────────────────────────────────────────────────
 
 @app.post("/api/ask")
 def ask_question(body: AskRequest):
@@ -755,10 +746,9 @@ def ask_question(body: AskRequest):
         cols = tcfg.get("allowed_columns", [])
         table_context.append(f"Table: {tname}\n  Columns: {', '.join(cols)}")
 
-    # Resolve supplier scope — session takes precedence over request body
-    session      = None
-    session_id   = body.sessionID
-    supplier_id  = body.supplierID
+    session     = None
+    session_id  = body.sessionID
+    supplier_id = body.supplierID
 
     if session_id and session_id in _sessions:
         session     = _sessions[session_id]
@@ -781,31 +771,26 @@ Rules:
 - Never SELECT * — name all columns
 - CTEs allowed for complex queries
 - All string literals use single quotes
-- When the user says "that supplier", "those SKUs", "drill into X" etc — use context from previous turns
+- When the user says "that supplier", "those SKUs", "drill into X" — use context from previous turns
 
 Available tables:
 {chr(10).join(table_context)}"""
 
     client_ai = Anthropic(api_key=api_key)
+    history   = []
 
-    # Build message history for this turn
-    # Previous turns: user question → assistant SQL → user result summary
-    history = []
     if session:
         for exchange in session["exchanges"]:
-            history.append({"role": "user",      "content": exchange["question"]})
-            history.append({"role": "assistant",  "content": exchange["sql"]})
-            # Summarise result so Claude knows what the query returned
+            history.append({"role": "user",     "content": exchange["question"]})
+            history.append({"role": "assistant", "content": exchange["sql"]})
             row_count = exchange.get("rows", 0)
             if row_count > 0 and exchange.get("data"):
                 cols = list(exchange["data"][0].keys()) if exchange["data"] else []
                 history.append({
                     "role": "user",
-                    "content": f"[Query returned {row_count} rows with columns: {', '.join(cols)}. "
-                               f"Now answer the next question using this context.]"
+                    "content": f"[Query returned {row_count} rows with columns: {', '.join(cols)}. Now answer the next question using this context.]"
                 })
 
-    # Add current question
     history.append({"role": "user", "content": body.question})
 
     last_error = None
@@ -843,23 +828,17 @@ Available tables:
         except Exception as e:
             last_error = str(e).split("\n")[0]
             if attempt == 2:
-                raise HTTPException(
-                    status_code=400,
-                    detail="I wasn't able to answer that question. Try rephrasing it or being more specific."
-                )
+                raise HTTPException(status_code=400, detail="I wasn't able to answer that question. Try rephrasing it or being more specific.")
 
-    # Update session with this exchange
     if session is not None:
         session["exchanges"].append({
             "question": body.question,
             "sql":      sql,
-            "data":     data[:5],  # Store first 5 rows for context — not the full result
+            "data":     data[:5],
             "rows":     len(data),
         })
-        # Keep last 10 exchanges to prevent context bloat
         session["exchanges"] = session["exchanges"][-10:]
 
-    # Log to agent_runs
     try:
         bq().insert_rows_json(f"{GCP_PROJECT}.{BQ_DATASET}.agent_runs", [{
             "runID":       str(uuid.uuid4()),
@@ -876,13 +855,89 @@ Available tables:
     except Exception:
         pass
 
+    return {"question": body.question, "sql": sql, "data": data, "rows": len(data), "sessionID": session_id}
+
+
+# ── GET /api/insights/current ─────────────────────────────────────────────────
+
+@app.get("/api/insights/current")
+def get_insights_current():
+    """Returns the most recent auto-published digest and its alerts for the dashboard banner."""
+    client = bq()
+
+    digest_rows = list(client.query(f"""
+        SELECT digestID, weekOf, narrative, totalAlerts, criticalCount,
+               warningCount, watchCount, confidence, autoPublished, generatedAt
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.insight_digests`
+        WHERE autoPublished = TRUE
+        ORDER BY weekOf DESC
+        LIMIT 1
+    """).result())
+
+    if not digest_rows:
+        return {"digest": None, "alerts": [], "has_insights": False}
+
+    digest   = _row_to_dict(digest_rows[0])
+    week_of  = str(digest["weekOf"])
+
+    alert_rows = list(client.query(f"""
+        SELECT insightID, weekOf, signalType, severity, supplierID,
+               productSKU, productCategory, metricName, currentValue,
+               baselineValue, changePercent, description, confidence
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.insights`
+        WHERE weekOf = '{week_of}'
+          AND autoPublished = TRUE
+        ORDER BY
+            CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+            changePercent DESC
+    """).result())
+
     return {
-        "question":  body.question,
-        "sql":       sql,
-        "data":      data,
-        "rows":      len(data),
-        "sessionID": session_id,
+        "digest":       digest,
+        "alerts":       [_row_to_dict(r) for r in alert_rows],
+        "has_insights": True,
     }
+
+
+# ── GET /api/insights/history ─────────────────────────────────────────────────
+
+@app.get("/api/insights/history")
+def get_insights_history():
+    """Returns last 4 weeks of alerts grouped by week for the expanded view."""
+    client = bq()
+
+    rows = list(client.query(f"""
+        SELECT insightID, weekOf, signalType, severity, supplierID,
+               productSKU, productCategory, metricName, currentValue,
+               baselineValue, changePercent, description, confidence, autoPublished
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.insights`
+        ORDER BY weekOf DESC,
+            CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+            changePercent DESC
+    """).result())
+
+    weeks = {}
+    for row in rows:
+        d = _row_to_dict(row)
+        w = str(d["weekOf"])
+        if w not in weeks:
+            weeks[w] = {"weekOf": w, "alerts": [], "critical": 0, "warning": 0, "watch": 0}
+        weeks[w]["alerts"].append(d)
+        weeks[w][d["severity"]] = weeks[w].get(d["severity"], 0) + 1
+
+    digest_rows = list(client.query(f"""
+        SELECT weekOf, narrative, totalAlerts, criticalCount, warningCount, watchCount
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.insight_digests`
+        ORDER BY weekOf DESC
+    """).result())
+
+    for dr in digest_rows:
+        d = _row_to_dict(dr)
+        w = str(d["weekOf"])
+        if w in weeks:
+            weeks[w]["narrative"] = d["narrative"]
+
+    return {"weeks": list(weeks.values())}
 
 
 # ── Serve React frontend ──────────────────────────────────────────────────────

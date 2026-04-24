@@ -95,6 +95,102 @@ function DateRangeControl({dateFrom,dateTo,onChange}) {
   );
 }
 
+// ── Insights Banner ───────────────────────────────────────────────────────────
+function InsightsBanner() {
+  const [data,setData]         = useState(null);
+  const [expanded,setExpanded] = useState(false);
+  const [history,setHistory]   = useState(null);
+  const [loadingHistory,setLoadingHistory] = useState(false);
+
+  useEffect(()=>{
+    apiFetch("/api/insights/current").then(d=>setData(d)).catch(()=>{});
+  },[]);
+
+  const loadHistory = async () => {
+    if (history) { setExpanded(e=>!e); return; }
+    setLoadingHistory(true);
+    try {
+      const d = await apiFetch("/api/insights/history");
+      setHistory(d.weeks || []);
+      setExpanded(true);
+    } catch(e) {}
+    finally { setLoadingHistory(false); }
+  };
+
+  if (!data?.has_insights) return null;
+
+  const { digest, alerts } = data;
+  const critical = alerts.filter(a=>a.severity==="critical").length;
+  const warning  = alerts.filter(a=>a.severity==="warning").length;
+  const watch    = alerts.filter(a=>a.severity==="watch").length;
+
+  const severityColor  = critical > 0 ? C.red  : warning > 0 ? C.amber : C.blue;
+  const severityBg     = critical > 0 ? "rgba(239,68,68,0.08)"  : warning > 0 ? "rgba(245,158,11,0.08)"  : "rgba(96,165,250,0.08)";
+  const severityBorder = critical > 0 ? "rgba(239,68,68,0.2)"   : warning > 0 ? "rgba(245,158,11,0.2)"   : "rgba(96,165,250,0.2)";
+
+  const weekLabel = digest.weekOf ? `Week of ${new Date(digest.weekOf+"T00:00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}` : "";
+
+  return (
+    <div style={{marginBottom:20}}>
+      <div style={{background:severityBg,border:`1px solid ${severityBorder}`,borderRadius:10,padding:"14px 18px"}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:14}}>
+          <div style={{flexShrink:0,marginTop:4}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:severityColor,boxShadow:`0 0 6px ${severityColor}`}}/>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:12,fontWeight:700,color:severityColor,textTransform:"uppercase",letterSpacing:"0.06em"}}>Weekly Insights</span>
+              <span style={{fontSize:11,color:C.muted}}>{weekLabel}</span>
+              <div style={{display:"flex",gap:6,marginLeft:"auto"}}>
+                {critical>0 && <span style={{background:"rgba(239,68,68,0.15)",color:C.red,padding:"1px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{critical} critical</span>}
+                {warning>0  && <span style={{background:"rgba(245,158,11,0.15)",color:C.amber,padding:"1px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{warning} warning</span>}
+                {watch>0    && <span style={{background:"rgba(96,165,250,0.15)",color:C.blue,padding:"1px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{watch} watch</span>}
+              </div>
+            </div>
+            <p style={{fontSize:13,color:"#cbd5e1",lineHeight:1.7,margin:"0 0 10px",fontStyle:"italic"}}>
+              {digest.narrative}
+            </p>
+            <button onClick={loadHistory}
+              style={{background:"none",border:`1px solid ${severityBorder}`,color:severityColor,borderRadius:6,padding:"4px 12px",fontSize:11,cursor:"pointer",fontWeight:600}}>
+              {loadingHistory ? "Loading..." : expanded ? "Hide detail ↑" : `View all ${alerts.length} alerts & history ↓`}
+            </button>
+          </div>
+        </div>
+
+        {expanded && history && (
+          <div style={{marginTop:16,borderTop:`1px solid ${severityBorder}`,paddingTop:16}}>
+            {history.map((week,wi)=>(
+              <div key={wi} style={{marginBottom:wi<history.length-1?20:0}}>
+                <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,display:"flex",alignItems:"center",gap:10}}>
+                  <span>Week of {new Date(week.weekOf+"T00:00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}</span>
+                  <span style={{color:"rgba(255,255,255,0.15)"}}>·</span>
+                  <span>{week.alerts.length} alerts</span>
+                  {week.critical>0 && <span style={{color:C.red}}>{week.critical} critical</span>}
+                  {week.warning>0  && <span style={{color:C.amber}}>{week.warning} warning</span>}
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {week.alerts.map((a,ai)=>{
+                    const sc = a.severity==="critical"?C.red:a.severity==="warning"?C.amber:C.blue;
+                    return (
+                      <div key={ai} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 10px",background:"rgba(255,255,255,0.02)",borderRadius:6,border:"1px solid rgba(255,255,255,0.04)"}}>
+                        <span style={{fontSize:9,color:sc,flexShrink:0}}>●</span>
+                        <span style={{fontSize:12,color:"#94a3b8",flex:1}}>{a.description}</span>
+                        <span style={{fontSize:11,color:sc,fontFamily:"monospace",whiteSpace:"nowrap",fontWeight:600}}>
+                          {a.changePercent!=null?`${a.changePercent>0?"+":""}${a.changePercent.toFixed(1)}%`:""}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Business Overview Dashboard ───────────────────────────────────────────────
 function BusinessDashboard() {
   const [data,setData]       = useState(null);
@@ -102,7 +198,6 @@ function BusinessDashboard() {
   const [error,setError]     = useState(null);
   const [dateFrom,setDateFrom] = useState(null);
   const [dateTo,setDateTo]   = useState(null);
-  // Cross-filter state
   const [filterSupplier,setFilterSupplier] = useState(null);
   const [filterCategory,setFilterCategory] = useState(null);
 
@@ -121,11 +216,8 @@ function BusinessDashboard() {
 
   const clearFilters = () => { setFilterSupplier(null); setFilterCategory(null); };
 
-  // Apply cross-filters to datasets
   const filteredTrend = data?.trend || [];
-  const filteredSuppliers = (data?.by_supplier||[]).filter(r =>
-    (!filterCategory) // category filter doesn't narrow supplier list, just highlights
-  );
+  const filteredSuppliers = (data?.by_supplier||[]).filter(r => (!filterCategory));
   const filteredCategories = (data?.by_category||[]).filter(r =>
     !filterSupplier || (data?.by_supplier||[]).find(s=>s.supplierID===filterSupplier)
   );
@@ -139,6 +231,8 @@ function BusinessDashboard() {
 
   return (
     <div>
+      <InsightsBanner />
+
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20,gap:16,flexWrap:"wrap"}}>
         <div>
           <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Business Overview</h2>
@@ -159,7 +253,6 @@ function BusinessDashboard() {
 
       {error && <ErrMsg message={error} onRetry={load} />}
 
-      {/* Scorecards */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:10,marginBottom:20}}>
         <Scorecard label="Total Orders"     value={fmt.num(s.total_orders)} />
         <Scorecard label="Gross Revenue"    value={fmt.cur(s.total_gross_revenue)} />
@@ -170,7 +263,6 @@ function BusinessDashboard() {
         <Scorecard label="Returned Revenue" value={fmt.cur(s.returned_revenue)}   sub="Gross rev of returned orders" warn />
       </div>
 
-      {/* Trend charts — full width */}
       <SLabel>Incident &amp; Return Rate Trend</SLabel>
       <Card style={{marginBottom:16}}>
         <ResponsiveContainer width="100%" height={200}>
@@ -199,7 +291,6 @@ function BusinessDashboard() {
         </ResponsiveContainer>
       </Card>
 
-      {/* Middle row — suppliers + categories */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
         <div>
           <SLabel>Top 10 Suppliers by Incident Rate {filterSupplier && <span style={{color:C.blue,fontSize:10,marginLeft:6}}>● filtered</span>}</SLabel>
@@ -238,7 +329,6 @@ function BusinessDashboard() {
         </div>
       </div>
 
-      {/* Bottom row — resolution mix */}
       <SLabel>Resolution Method Mix</SLabel>
       <Card>
         <ResponsiveContainer width="100%" height={200}>
@@ -265,7 +355,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   const [dateTo,setDateTo]           = useState(null);
   const [filterCategory,setFilterCategory] = useState(null);
   const [filterIncType,setFilterIncType]   = useState(null);
-  const [reportExpanded,setReportExpanded] = useState(null); // index
+  const [reportExpanded,setReportExpanded] = useState(null);
 
   useEffect(()=>{
     if (!supplierFacing) apiFetch("/api/suppliers").then(d=>{ setSuppliers(d.suppliers||[]); if(!selectedID&&d.suppliers?.length) setSelectedID(d.suppliers[0].supplierID); }).catch(()=>{});
@@ -290,11 +380,9 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   const retVsBench = (s.return_rate_pct||0)-(s.portfolio_return_rate||0);
   const resVsBench = (s.total_resolution_cost||0)-(s.portfolio_avg_res_cost||0);
 
-  // Cross-filter applied datasets
   const skuInc = (data?.sku_incidents||[]).filter(r=> (!filterCategory||r.productCategory===filterCategory)&&(!filterIncType||r.incidentType===filterIncType));
   const skuRet = (data?.sku_returns||[]).filter(r=> (!filterCategory||r.productCategory===filterCategory));
 
-  // Aggregate SKU incident table (group by SKU)
   const skuIncAgg = Object.values(skuInc.reduce((acc,r)=>{
     if(!acc[r.productSKU]) acc[r.productSKU]={productSKU:r.productSKU,productCategory:r.productCategory,total_incidents:0,total_resolution_cost:0,avg_product_rating:[]};
     acc[r.productSKU].total_incidents += (+r.total_incidents||0);
@@ -303,7 +391,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
     return acc;
   },{})).map(r=>({...r,avg_product_rating:r.avg_product_rating.length?r.avg_product_rating.reduce((a,b)=>a+b,0)/r.avg_product_rating.length:0})).sort((a,b)=>b.total_incidents-a.total_incidents);
 
-  // Aggregate SKU return table
   const skuRetAgg = Object.values(skuRet.reduce((acc,r)=>{
     if(!acc[r.productSKU]) acc[r.productSKU]={productSKU:r.productSKU,productCategory:r.productCategory,total_returns:0,avg_product_rating:[]};
     acc[r.productSKU].total_returns += (+r.total_returns||0);
@@ -315,7 +402,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
 
   return (
     <div>
-      {/* Header */}
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20,gap:16,flexWrap:"wrap"}}>
         <div>
           <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>
@@ -346,7 +432,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
 
       {data&&!loading&&(
         <>
-          {/* Scorecard row 1 */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:10}}>
             <Scorecard label="Total Orders"     value={fmt.num(s.total_orders)} />
             <Scorecard label="Product Cost"     value={fmt.cur(s.total_product_cost)} sub="Supplier's revenue" />
@@ -356,7 +441,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
             <Scorecard label="Returned Revenue" value={fmt.cur(s.returned_revenue)} warn />
           </div>
 
-          {/* Scorecard row 2 — benchmarks */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:20}}>
             <Scorecard label="Incident Rate vs Benchmark"
               value={`${incVsBench>0?"+":""}${incVsBench.toFixed(1)}pp`}
@@ -372,7 +456,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
               sub={`Portfolio avg/supplier: ${fmt.cur(s.portfolio_avg_res_cost)}`} />
           </div>
 
-          {/* Category charts — click to filter SKU tables */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div>
               <SLabel>Incident Rate by Category {filterCategory&&<span style={{color:C.blue,fontSize:10,marginLeft:6}}>● {filterCategory}</span>}</SLabel>
@@ -411,7 +494,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
             </div>
           </div>
 
-          {/* SKU tables */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div>
               <SLabel>SKU Incidents {filterCategory&&`— ${filterCategory}`}</SLabel>
@@ -470,7 +552,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
             </div>
           </div>
 
-          {/* Bottom row — return reasons, incident types, resolution mix */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16,marginBottom:16}}>
             <div>
               <SLabel>Return Reasons</SLabel>
@@ -517,7 +598,6 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
             </div>
           </div>
 
-          {/* Reports */}
           {(data.reports||[]).length>0&&(
             <>
               <SLabel>Approved Reports</SLabel>
@@ -571,7 +651,6 @@ function PipelineProgress({ startTime, status }) {
   const TERMINAL = ["pending_review","pending_publish","approved","rejected","escalated","failed","completed"];
   const done = TERMINAL.includes(status);
 
-  // Work out which step we're on based on elapsed time
   let cumulative = 0;
   let activeIdx = 0;
   for (let i = 0; i < PIPELINE_STEPS.length; i++) {
@@ -582,14 +661,12 @@ function PipelineProgress({ startTime, status }) {
 
   const totalEstimated = PIPELINE_STEPS.reduce((s, n) => s + n.duration, 0);
   const progress = done ? 100 : Math.min((elapsed / totalEstimated) * 100, 95);
-
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
   const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
   return (
     <div style={{ padding: "20px 0" }}>
-      {/* Progress bar */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: C.muted }}>Pipeline progress</span>
         <span style={{ fontSize: 12, color: C.muted, fontFamily: "monospace" }}>{timeStr} elapsed</span>
@@ -597,43 +674,24 @@ function PipelineProgress({ startTime, status }) {
       <div style={{ width: "100%", height: 3, background: "rgba(255,255,255,0.08)", borderRadius: 2, marginBottom: 24, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${progress}%`, background: done ? C.green : C.blue, borderRadius: 2, transition: "width 0.8s ease" }} />
       </div>
-
-      {/* Steps */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {PIPELINE_STEPS.map((step, i) => {
-          const isActive  = !done && i === activeIdx;
+          const isActive   = !done && i === activeIdx;
           const isComplete = done ? true : i < activeIdx;
-          const isPending = !isComplete && !isActive;
-
           return (
             <div key={step.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 10px", borderRadius: 6, background: isActive ? "rgba(96,165,250,0.08)" : "transparent", border: isActive ? `1px solid rgba(96,165,250,0.2)` : "1px solid transparent", transition: "all 0.3s" }}>
-              {/* Icon */}
               <div style={{ width: 20, height: 20, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isComplete ? "rgba(34,197,94,0.15)" : isActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.05)", border: `1px solid ${isComplete ? C.green : isActive ? C.blue : "rgba(255,255,255,0.1)"}` }}>
-                {isComplete
-                  ? <span style={{ fontSize: 11, color: C.green }}>✓</span>
-                  : isActive
-                    ? <div style={{ width: 8, height: 8, borderRadius: "50%", border: `1.5px solid ${C.blue}`, borderTopColor: "transparent", animation: "spin 0.7s linear infinite" }} />
-                    : <span style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>○</span>
-                }
+                {isComplete ? <span style={{ fontSize: 11, color: C.green }}>✓</span> : isActive ? <div style={{ width: 8, height: 8, borderRadius: "50%", border: `1.5px solid ${C.blue}`, borderTopColor: "transparent", animation: "spin 0.7s linear infinite" }} /> : <span style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>○</span>}
               </div>
-
-              {/* Label */}
               <div style={{ flex: 1 }}>
-                <span style={{ fontSize: 13, fontWeight: isActive ? 600 : 400, color: isComplete ? "#94a3b8" : isActive ? C.text : "rgba(255,255,255,0.3)" }}>
-                  {step.label}
-                </span>
-                {isActive && (
-                  <span style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{step.desc}</span>
-                )}
+                <span style={{ fontSize: 13, fontWeight: isActive ? 600 : 400, color: isComplete ? "#94a3b8" : isActive ? C.text : "rgba(255,255,255,0.3)" }}>{step.label}</span>
+                {isActive && <span style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{step.desc}</span>}
               </div>
-
-              {/* Step number */}
               <span style={{ fontSize: 10, color: "rgba(255,255,255,0.15)", fontFamily: "monospace" }}>{i + 1}/{PIPELINE_STEPS.length}</span>
             </div>
           );
         })}
       </div>
-
       {done && (
         <div style={{ marginTop: 16, padding: "10px 14px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ color: C.green }}>✓</span>
@@ -702,9 +760,7 @@ function NewReport({onCreated}) {
         <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>New Report</h2>
         <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Trigger an ad-hoc agent run · review results · choose to share or keep internal</p>
       </div>
-
       {error&&<ErrMsg message={error}/>}
-
       <Card style={{display:"flex",flexDirection:"column",gap:16,marginBottom:24}}>
         <div>
           <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Report type</label>
@@ -729,8 +785,6 @@ function NewReport({onCreated}) {
         <button onClick={handleSubmit} disabled={running||!goal.trim()||(isSupplier&&!supplierID)} style={{background:running?"rgba(255,255,255,0.06)":"rgba(96,165,250,0.2)",border:`1px solid ${running?C.border:C.blue}`,color:running?C.muted:C.blue,borderRadius:7,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:running?"not-allowed":"pointer",opacity:(running||!goal.trim()||(isSupplier&&!supplierID))?0.5:1}}>
           {running?"Running pipeline...":"Run Report"}
         </button>
-
-        {/* Pipeline progress — shown while running or just finished */}
         {(running || isReady) && startTime && (
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginTop:4}}>
             <PipelineProgress startTime={startTime} status={status} />
@@ -738,22 +792,18 @@ function NewReport({onCreated}) {
           </div>
         )}
       </Card>
-
-      {/* Results + sharing decision */}
       {isReady&&runData&&(
         <div>
           <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:10}}>
             <div style={{fontSize:14,fontWeight:600,color:C.green,marginBottom:4}}>Report ready — review below</div>
             <div style={{fontSize:12,color:"#86efac"}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · {runData.policyDecision?.replace(/_/g," ")}</div>
           </div>
-
           <Card style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>Report Narrative</div>
             <div style={{fontSize:13,lineHeight:1.8,color:"#cbd5e1",whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif",maxHeight:400,overflowY:"auto"}}>
               {runData.reportNarrative||"No narrative generated."}
             </div>
           </Card>
-
           <Card>
             <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:12}}>What would you like to do with this report?</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -797,7 +847,6 @@ function AskQuestion() {
     apiFetch("/api/suppliers").then(d=>setSuppliers(d.suppliers||[])).catch(()=>{});
   },[]);
 
-  // Auto-scroll to bottom when new exchange arrives
   useEffect(()=>{
     if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
   },[exchanges]);
@@ -811,9 +860,7 @@ function AskQuestion() {
   };
 
   const handleNewConversation = async () => {
-    if (sessionID) {
-      await apiFetch(`/api/ask/session/${sessionID}`, {method:"DELETE"}).catch(()=>{});
-    }
+    if (sessionID) await apiFetch(`/api/ask/session/${sessionID}`, {method:"DELETE"}).catch(()=>{});
     await startSession(supplierID);
     setQuestion("");
     inputRef.current?.focus();
@@ -831,35 +878,23 @@ function AskQuestion() {
   const handleAsk = async () => {
     if (!question.trim() || loading) return;
     setError(null);
-
-    // Create session on first question
     let sid = sessionID;
-    if (!sid) {
-      sid = await startSession(supplierID);
-    }
-
+    if (!sid) sid = await startSession(supplierID);
     const q = question.trim();
     setQuestion("");
     setLoading(true);
-
-    // Optimistically add question to thread
     setExchanges(prev => [...prev, {question: q, sql: null, data: null, rows: null, loading: true}]);
-
     try {
       const res = await apiFetch("/api/ask", {
         method: "POST",
         body: JSON.stringify({question: q, supplierID: supplierID||null, sessionID: sid}),
       });
       setExchanges(prev => prev.map((ex, i) =>
-        i === prev.length - 1
-          ? {question: q, sql: res.sql, data: res.data, rows: res.rows, loading: false}
-          : ex
+        i === prev.length - 1 ? {question: q, sql: res.sql, data: res.data, rows: res.rows, loading: false} : ex
       ));
     } catch(e) {
       setExchanges(prev => prev.map((ex, i) =>
-        i === prev.length - 1
-          ? {question: q, sql: null, data: null, rows: null, loading: false, error: e.message}
-          : ex
+        i === prev.length - 1 ? {question: q, sql: null, data: null, rows: null, loading: false, error: e.message} : ex
       ));
       setError(e.message);
     } finally {
@@ -883,8 +918,6 @@ function AskQuestion() {
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 120px)",maxWidth:900}}>
-
-      {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexShrink:0}}>
         <div>
           <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Ask a Question</h2>
@@ -907,10 +940,7 @@ function AskQuestion() {
         </div>
       </div>
 
-      {/* Conversation thread */}
       <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:16,paddingBottom:8}}>
-
-        {/* Empty state */}
         {!hasConversation && (
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flex:1,gap:24}}>
             <div style={{fontSize:32,opacity:0.3}}>💬</div>
@@ -929,22 +959,15 @@ function AskQuestion() {
             </div>
           </div>
         )}
-
-        {/* Exchange bubbles */}
         {exchanges.map((ex, i) => (
           <div key={i} style={{display:"flex",flexDirection:"column",gap:8}}>
-
-            {/* Question bubble */}
             <div style={{display:"flex",justifyContent:"flex-end"}}>
               <div style={{background:"rgba(96,165,250,0.15)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:"12px 12px 4px 12px",padding:"10px 16px",maxWidth:"75%",fontSize:14,color:C.text,lineHeight:1.5}}>
                 {ex.question}
               </div>
             </div>
-
-            {/* Answer bubble */}
             <div style={{display:"flex",justifyContent:"flex-start"}}>
               <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:"4px 12px 12px 12px",padding:"12px 16px",maxWidth:"90%",minWidth:200}}>
-
                 {ex.loading ? (
                   <div style={{display:"flex",alignItems:"center",gap:10,color:C.muted,fontSize:13}}>
                     <div style={{width:14,height:14,border:`2px solid ${C.blue}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.7s linear infinite",flexShrink:0}}/>
@@ -954,12 +977,9 @@ function AskQuestion() {
                   <div style={{color:C.red,fontSize:13}}>{ex.error}</div>
                 ) : (
                   <>
-                    {/* Result summary */}
                     <div style={{fontSize:13,color:C.muted,marginBottom:10}}>
                       {ex.rows === 0 ? "No results found." : `${ex.rows} row${ex.rows!==1?"s":""} returned`}
                     </div>
-
-                    {/* Data table — collapsed by default for large results */}
                     {ex.data && ex.data.length > 0 && (
                       <div style={{marginBottom:8}}>
                         <div style={{overflowX:"auto",maxHeight:expandedData[i]?400:160,overflowY:"auto",transition:"max-height 0.2s"}}>
@@ -991,8 +1011,6 @@ function AskQuestion() {
                         )}
                       </div>
                     )}
-
-                    {/* SQL toggle */}
                     {ex.sql && (
                       <div>
                         <button onClick={()=>toggleSQL(i)} style={{background:"none",border:"none",color:C.muted,fontSize:11,cursor:"pointer",padding:"2px 0",display:"flex",alignItems:"center",gap:4}}>
@@ -1012,11 +1030,9 @@ function AskQuestion() {
             </div>
           </div>
         ))}
-
         <div ref={bottomRef} />
       </div>
 
-      {/* Input area */}
       <div style={{flexShrink:0,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
         {error && <ErrMsg message={error} />}
         <div style={{display:"flex",gap:10}}>
@@ -1190,8 +1206,6 @@ function AuditView({runSummary,onDecision,onBack}) {
               <div style={{fontSize:11,color:C.muted,marginTop:2}}>{opt.desc}</div>
             </div>
           ))}
-
-          {/* Share with supplier toggle — only for supplier reports */}
           {run?.supplierID&&decision&&decision!=="rejected"&&(
             <div style={{padding:"12px 14px",background:"rgba(255,255,255,0.03)",border:`1px solid ${C.border}`,borderRadius:8}}>
               <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
@@ -1203,7 +1217,6 @@ function AuditView({runSummary,onDecision,onBack}) {
               </label>
             </div>
           )}
-
           <div><label style={{fontSize:12,color:"#94a3b8",display:"block",marginBottom:6}}>Reviewer</label><input value={reviewer} onChange={e=>setReviewer(e.target.value)} style={{width:"100%",background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",color:C.text,fontSize:12,fontFamily:"inherit",boxSizing:"border-box"}}/></div>
           {(decision==="rejected"||decision==="edited_and_approved")&&(
             <div><label style={{fontSize:12,color:"#94a3b8",display:"block",marginBottom:6}}>{decision==="rejected"?"Reason *":"Notes"}</label><textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} style={{width:"100%",background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,borderRadius:6,padding:10,color:C.text,fontSize:12,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/></div>
@@ -1259,7 +1272,6 @@ export default function App() {
   const [decisions,setDecisions]   = useState({});
   const [dashTab,setDashTab]   = useState("business");
 
-  // Supplier-facing portal detection
   const supplierMatch = window.location.pathname.match(/^\/supplier\/([A-Z0-9]+)$/i);
   if (supplierMatch) {
     return (
