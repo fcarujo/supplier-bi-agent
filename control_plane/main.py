@@ -41,6 +41,13 @@ app.add_middleware(
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "supplier-bi-agent-2025")
 BQ_DATASET  = os.environ.get("BQ_DATASET",  "supplier_bi")
 
+# ── Session store — in-memory, ephemeral ──────────────────────────────────────
+# Each session: { messages: [...], supplier_id: str|None, created_at: str }
+# Sessions are cleared when the Cloud Run instance restarts — this is by design.
+# Max 100 sessions to prevent memory bloat on long-running instances.
+_sessions: dict = {}
+MAX_SESSIONS = 100
+
 
 def bq():
     return bigquery.Client(project=GCP_PROJECT)
@@ -66,6 +73,7 @@ class RunRequest(BaseModel):
 class AskRequest(BaseModel):
     question:   str
     supplierID: Optional[str] = None
+    sessionID:  Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -195,7 +203,6 @@ def get_run(run_id: str):
             "validationFailed":   p.get("validationFailed", 0),
             "hallucinationFlags": p.get("hallucinationFlags", 0),
         })
-        # Also read confidence from reportJSON if not in agent_runs
         if not run.get("confidence"):
             rj = _safe_json(p.get("reportJSON"))
             if isinstance(rj, dict) and rj.get("confidence"):
@@ -226,7 +233,6 @@ def get_run(run_id: str):
 def get_run_status(run_id: str):
     client = bq()
 
-    # Check pending_reports first — if it exists there, pipeline is done
     pending = list(client.query(f"""
         SELECT status, policyDecision, confidence
         FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
@@ -236,8 +242,6 @@ def get_run_status(run_id: str):
         p        = dict(pending[0])
         terminal = "escalated" if p.get("policyDecision") == "escalate" else "pending_review"
 
-        # Confidence is often null in agent_runs due to BigQuery streaming buffer delay.
-        # Try agent_runs first, then fall back to reportJSON.confidence in pending_reports.
         conf_rows = list(client.query(f"""
             SELECT confidence FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
             WHERE runID = '{run_id}' LIMIT 1
@@ -256,7 +260,6 @@ def get_run_status(run_id: str):
 
         return {"runID": run_id, "status": terminal, "confidence": conf_val, "policyDecision": p.get("policyDecision")}
 
-    # Fall back to agent_runs
     rows = list(client.query(f"""
         SELECT status, confidence, policyDecision
         FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
@@ -384,7 +387,6 @@ def get_business_dashboard(
     def _q(sql):
         return list(client.query(sql).result())
 
-    # Run all queries in parallel — cuts load time from ~10s to ~2s
     with ThreadPoolExecutor(max_workers=7) as ex:
         f_sc = ex.submit(_q, f"""
             SELECT
@@ -497,7 +499,6 @@ def get_supplier_dashboard(
     order_filter = _build_date_filter(date_from, date_to)
     inc_filter   = _build_date_filter(date_from, date_to, "o")
 
-    # Fetch supplier metadata first — if not found, fail fast before running queries
     sup_rows = list(client.query(f"""
         SELECT supplierID, supplierName, supplierTier, supplierRegion, categorySpeciality
         FROM `{GCP_PROJECT}.{BQ_DATASET}.suppliers`
@@ -510,7 +511,6 @@ def get_supplier_dashboard(
     def _q(sql):
         return list(client.query(sql).result())
 
-    # Run all remaining queries in parallel
     with ThreadPoolExecutor(max_workers=11) as ex:
         f_sc = ex.submit(_q, f"""
             SELECT
@@ -685,7 +685,56 @@ def trigger_run(body: RunRequest):
     return {"runID": run_id, "status": "running"}
 
 
-# ── POST /api/ask ─────────────────────────────────────────────────────────────
+# ── POST /api/ask/session — create a new conversation session ─────────────────
+
+@app.post("/api/ask/session")
+def create_session(supplierID: Optional[str] = None):
+    """Create a new conversation session. Returns sessionID."""
+    global _sessions
+
+    # Evict oldest session if at capacity
+    if len(_sessions) >= MAX_SESSIONS:
+        oldest = min(_sessions.items(), key=lambda x: x[1]["created_at"])
+        del _sessions[oldest[0]]
+
+    session_id = str(uuid.uuid4())
+    _sessions[session_id] = {
+        "messages":    [],       # list of {role, content} for Claude
+        "exchanges":   [],       # list of {question, sql, data, rows} for UI
+        "supplier_id": supplierID,
+        "created_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    return {"sessionID": session_id, "supplierID": supplierID}
+
+
+# ── DELETE /api/ask/session/{session_id} — clear a session ───────────────────
+
+@app.delete("/api/ask/session/{session_id}")
+def delete_session(session_id: str):
+    """Clear a conversation session."""
+    if session_id in _sessions:
+        del _sessions[session_id]
+    return {"sessionID": session_id, "deleted": True}
+
+
+# ── GET /api/ask/session/{session_id} — get session history ──────────────────
+
+@app.get("/api/ask/session/{session_id}")
+def get_session(session_id: str):
+    """Get the conversation history for a session."""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = _sessions[session_id]
+    return {
+        "sessionID":   session_id,
+        "supplierID":  session["supplier_id"],
+        "exchanges":   session["exchanges"],
+        "turn_count":  len(session["exchanges"]),
+        "created_at":  session["created_at"],
+    }
+
+
+# ── POST /api/ask — conversational NL query ───────────────────────────────────
 
 @app.post("/api/ask")
 def ask_question(body: AskRequest):
@@ -706,10 +755,19 @@ def ask_question(body: AskRequest):
         cols = tcfg.get("allowed_columns", [])
         table_context.append(f"Table: {tname}\n  Columns: {', '.join(cols)}")
 
-    supplier_context = f"\nScope all queries to supplierID = '{body.supplierID}' only." if body.supplierID else ""
+    # Resolve supplier scope — session takes precedence over request body
+    session      = None
+    session_id   = body.sessionID
+    supplier_id  = body.supplierID
 
-    system_prompt = f"""You are a BigQuery SQL analyst for a supplier performance system.
-Translate the user's question into valid BigQuery SQL.
+    if session_id and session_id in _sessions:
+        session     = _sessions[session_id]
+        supplier_id = session["supplier_id"] or supplier_id
+
+    supplier_context = f"\nScope all queries to supplierID = '{supplier_id}' only." if supplier_id else ""
+
+    system_prompt = f"""You are a conversational BigQuery SQL analyst for a supplier performance system.
+You maintain context across a conversation — you can reference previous questions and results.
 
 Rules:
 - Use ONLY the tables and columns listed below
@@ -723,22 +781,42 @@ Rules:
 - Never SELECT * — name all columns
 - CTEs allowed for complex queries
 - All string literals use single quotes
+- When the user says "that supplier", "those SKUs", "drill into X" etc — use context from previous turns
 
 Available tables:
 {chr(10).join(table_context)}"""
 
-    client_ai  = Anthropic(api_key=api_key)
+    client_ai = Anthropic(api_key=api_key)
+
+    # Build message history for this turn
+    # Previous turns: user question → assistant SQL → user result summary
+    history = []
+    if session:
+        for exchange in session["exchanges"]:
+            history.append({"role": "user",      "content": exchange["question"]})
+            history.append({"role": "assistant",  "content": exchange["sql"]})
+            # Summarise result so Claude knows what the query returned
+            row_count = exchange.get("rows", 0)
+            if row_count > 0 and exchange.get("data"):
+                cols = list(exchange["data"][0].keys()) if exchange["data"] else []
+                history.append({
+                    "role": "user",
+                    "content": f"[Query returned {row_count} rows with columns: {', '.join(cols)}. "
+                               f"Now answer the next question using this context.]"
+                })
+
+    # Add current question
+    history.append({"role": "user", "content": body.question})
+
     last_error = None
     sql        = None
     data       = []
 
     for attempt in range(3):
-        messages = [{"role": "user", "content": body.question}]
+        messages = history.copy()
         if last_error and sql:
-            messages += [
-                {"role": "assistant", "content": sql},
-                {"role": "user", "content": f"That SQL failed: {last_error}\n\nFix and return only the corrected SQL."},
-            ]
+            messages.append({"role": "assistant", "content": sql})
+            messages.append({"role": "user", "content": f"That SQL failed: {last_error}\n\nFix and return only the corrected SQL."})
 
         resp = client_ai.messages.create(
             model="claude-sonnet-4-6",
@@ -767,15 +845,27 @@ Available tables:
             if attempt == 2:
                 raise HTTPException(
                     status_code=400,
-                    detail="I wasn't able to answer that question. Try rephrasing it or being more specific about the time period or metric."
+                    detail="I wasn't able to answer that question. Try rephrasing it or being more specific."
                 )
 
+    # Update session with this exchange
+    if session is not None:
+        session["exchanges"].append({
+            "question": body.question,
+            "sql":      sql,
+            "data":     data[:5],  # Store first 5 rows for context — not the full result
+            "rows":     len(data),
+        })
+        # Keep last 10 exchanges to prevent context bloat
+        session["exchanges"] = session["exchanges"][-10:]
+
+    # Log to agent_runs
     try:
         bq().insert_rows_json(f"{GCP_PROJECT}.{BQ_DATASET}.agent_runs", [{
             "runID":       str(uuid.uuid4()),
             "reportType":  "nl_query",
-            "audience":    "supplier" if body.supplierID else "business",
-            "supplierID":  body.supplierID,
+            "audience":    "supplier" if supplier_id else "business",
+            "supplierID":  supplier_id,
             "goal":        body.question,
             "startedAt":   datetime.now(timezone.utc).isoformat(),
             "completedAt": datetime.now(timezone.utc).isoformat(),
@@ -786,7 +876,13 @@ Available tables:
     except Exception:
         pass
 
-    return {"question": body.question, "sql": sql, "data": data, "rows": len(data)}
+    return {
+        "question":  body.question,
+        "sql":       sql,
+        "data":      data,
+        "rows":      len(data),
+        "sessionID": session_id,
+    }
 
 
 # ── Serve React frontend ──────────────────────────────────────────────────────

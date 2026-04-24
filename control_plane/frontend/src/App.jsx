@@ -779,96 +779,266 @@ function NewReport({onCreated}) {
   );
 }
 
-// ── Ask a Question ────────────────────────────────────────────────────────────
+// ── Ask a Question — Conversational ──────────────────────────────────────────
 function AskQuestion() {
-  const [suppliers,setSuppliers]   = useState([]);
-  const [supplierID,setSupplierID] = useState("");
-  const [question,setQuestion]     = useState("");
-  const [loading,setLoading]       = useState(false);
-  const [result,setResult]         = useState(null);
-  const [error,setError]           = useState(null);
-  const [history,setHistory]       = useState([]);
+  const [suppliers,setSuppliers]     = useState([]);
+  const [supplierID,setSupplierID]   = useState("");
+  const [question,setQuestion]       = useState("");
+  const [loading,setLoading]         = useState(false);
+  const [error,setError]             = useState(null);
+  const [sessionID,setSessionID]     = useState(null);
+  const [exchanges,setExchanges]     = useState([]);
+  const [expandedSQL,setExpandedSQL] = useState({});
+  const [expandedData,setExpandedData] = useState({});
+  const inputRef = useRef(null);
+  const bottomRef = useRef(null);
 
-  useEffect(()=>{ apiFetch("/api/suppliers").then(d=>setSuppliers(d.suppliers||[])).catch(()=>{}); },[]);
+  useEffect(()=>{
+    apiFetch("/api/suppliers").then(d=>setSuppliers(d.suppliers||[])).catch(()=>{});
+  },[]);
 
-  const handleAsk = async () => {
-    if (!question.trim()) return;
-    setLoading(true); setError(null); setResult(null);
-    try {
-      const res = await apiFetch("/api/ask",{method:"POST",body:JSON.stringify({question,supplierID:supplierID||null})});
-      setResult(res);
-      setHistory(prev=>[{question,result:res,ts:new Date().toISOString()},...prev.slice(0,9)]);
-      setQuestion("");
-    } catch(e) {
-      setError(e.message.includes("wasn't able")||e.message.includes("rephrasing")?e.message:"I wasn't able to answer that question. Try rephrasing it or being more specific.");
-    } finally { setLoading(false); }
+  // Auto-scroll to bottom when new exchange arrives
+  useEffect(()=>{
+    if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
+  },[exchanges]);
+
+  const startSession = async (sid) => {
+    const res = await apiFetch(`/api/ask/session${sid ? `?supplierID=${sid}` : ""}`, {method:"POST"});
+    setSessionID(res.sessionID);
+    setExchanges([]);
+    setError(null);
+    return res.sessionID;
   };
 
-  const examples = ["Which supplier had the highest incident rate last month?","Top 10 SKUs by resolution cost in the last 30 days","Most common return reasons for Electronics","Compare incident rates across fulfilment channels"];
+  const handleNewConversation = async () => {
+    if (sessionID) {
+      await apiFetch(`/api/ask/session/${sessionID}`, {method:"DELETE"}).catch(()=>{});
+    }
+    await startSession(supplierID);
+    setQuestion("");
+    inputRef.current?.focus();
+  };
+
+  const handleSupplierChange = async (val) => {
+    setSupplierID(val);
+    if (sessionID) {
+      await apiFetch(`/api/ask/session/${sessionID}`, {method:"DELETE"}).catch(()=>{});
+      await startSession(val);
+      setExchanges([]);
+    }
+  };
+
+  const handleAsk = async () => {
+    if (!question.trim() || loading) return;
+    setError(null);
+
+    // Create session on first question
+    let sid = sessionID;
+    if (!sid) {
+      sid = await startSession(supplierID);
+    }
+
+    const q = question.trim();
+    setQuestion("");
+    setLoading(true);
+
+    // Optimistically add question to thread
+    setExchanges(prev => [...prev, {question: q, sql: null, data: null, rows: null, loading: true}]);
+
+    try {
+      const res = await apiFetch("/api/ask", {
+        method: "POST",
+        body: JSON.stringify({question: q, supplierID: supplierID||null, sessionID: sid}),
+      });
+      setExchanges(prev => prev.map((ex, i) =>
+        i === prev.length - 1
+          ? {question: q, sql: res.sql, data: res.data, rows: res.rows, loading: false}
+          : ex
+      ));
+    } catch(e) {
+      setExchanges(prev => prev.map((ex, i) =>
+        i === prev.length - 1
+          ? {question: q, sql: null, data: null, rows: null, loading: false, error: e.message}
+          : ex
+      ));
+      setError(e.message);
+    } finally {
+      setLoading(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  const toggleSQL  = (i) => setExpandedSQL(p => ({...p, [i]: !p[i]}));
+  const toggleData = (i) => setExpandedData(p => ({...p, [i]: !p[i]}));
+
+  const examples = [
+    "Which supplier had the highest incident rate last month?",
+    "Top 10 SKUs by resolution cost in the last 30 days",
+    "Most common return reasons for Electronics",
+    "Compare incident rates across fulfilment channels",
+    "Show me damage_defect incidents by category this quarter",
+  ];
+
+  const hasConversation = exchanges.length > 0;
 
   return (
-    <div>
-      <div style={{marginBottom:24}}>
-        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Ask a Question</h2>
-        <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Natural language queries on your supplier data</p>
-      </div>
+    <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 120px)",maxWidth:900}}>
 
-      <Card style={{marginBottom:20}}>
-        <div style={{display:"flex",gap:10,marginBottom:12}}>
-          <select value={supplierID} onChange={e=>setSupplierID(e.target.value)} style={{background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13,minWidth:180}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexShrink:0}}>
+        <div>
+          <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Ask a Question</h2>
+          <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>
+            Conversational analysis · {hasConversation ? `${exchanges.length} question${exchanges.length!==1?"s":""} this session` : "Start a new conversation"}
+          </p>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <select value={supplierID} onChange={e=>handleSupplierChange(e.target.value)}
+            style={{background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"6px 12px",fontSize:13,minWidth:180}}>
             <option value="">All suppliers</option>
             {suppliers.map(s=><option key={s.supplierID} value={s.supplierID}>{s.supplierName}</option>)}
           </select>
+          {hasConversation && (
+            <button onClick={handleNewConversation}
+              style={{background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>
+              New conversation
+            </button>
+          )}
         </div>
+      </div>
+
+      {/* Conversation thread */}
+      <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:16,paddingBottom:8}}>
+
+        {/* Empty state */}
+        {!hasConversation && (
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flex:1,gap:24}}>
+            <div style={{fontSize:32,opacity:0.3}}>💬</div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:15,color:C.muted,marginBottom:16}}>Ask anything about your supplier data</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center",maxWidth:600}}>
+                {examples.map((ex,i)=>(
+                  <button key={i} onClick={()=>{ setQuestion(ex); inputRef.current?.focus(); }}
+                    style={{background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,color:C.muted,borderRadius:20,padding:"6px 14px",fontSize:12,cursor:"pointer",transition:"all 0.15s"}}
+                    onMouseEnter={e=>{ e.currentTarget.style.borderColor=C.blue; e.currentTarget.style.color=C.blue; }}
+                    onMouseLeave={e=>{ e.currentTarget.style.borderColor=C.border; e.currentTarget.style.color=C.muted; }}>
+                    {ex}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Exchange bubbles */}
+        {exchanges.map((ex, i) => (
+          <div key={i} style={{display:"flex",flexDirection:"column",gap:8}}>
+
+            {/* Question bubble */}
+            <div style={{display:"flex",justifyContent:"flex-end"}}>
+              <div style={{background:"rgba(96,165,250,0.15)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:"12px 12px 4px 12px",padding:"10px 16px",maxWidth:"75%",fontSize:14,color:C.text,lineHeight:1.5}}>
+                {ex.question}
+              </div>
+            </div>
+
+            {/* Answer bubble */}
+            <div style={{display:"flex",justifyContent:"flex-start"}}>
+              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:"4px 12px 12px 12px",padding:"12px 16px",maxWidth:"90%",minWidth:200}}>
+
+                {ex.loading ? (
+                  <div style={{display:"flex",alignItems:"center",gap:10,color:C.muted,fontSize:13}}>
+                    <div style={{width:14,height:14,border:`2px solid ${C.blue}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.7s linear infinite",flexShrink:0}}/>
+                    Querying data...
+                  </div>
+                ) : ex.error ? (
+                  <div style={{color:C.red,fontSize:13}}>{ex.error}</div>
+                ) : (
+                  <>
+                    {/* Result summary */}
+                    <div style={{fontSize:13,color:C.muted,marginBottom:10}}>
+                      {ex.rows === 0 ? "No results found." : `${ex.rows} row${ex.rows!==1?"s":""} returned`}
+                    </div>
+
+                    {/* Data table — collapsed by default for large results */}
+                    {ex.data && ex.data.length > 0 && (
+                      <div style={{marginBottom:8}}>
+                        <div style={{overflowX:"auto",maxHeight:expandedData[i]?400:160,overflowY:"auto",transition:"max-height 0.2s"}}>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                            <thead>
+                              <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                                {Object.keys(ex.data[0]).map(col=>(
+                                  <th key={col} style={{padding:"6px 10px",textAlign:"left",color:C.muted,fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>{col}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {ex.data.map((row,j)=>(
+                                <tr key={j} style={{borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
+                                  {Object.values(row).map((val,k)=>(
+                                    <td key={k} style={{padding:"6px 10px",color:C.text,fontFamily:typeof val==="number"?"monospace":"inherit",fontSize:12}}>
+                                      {typeof val==="number"?(+val).toLocaleString(undefined,{maximumFractionDigits:2}):String(val??"—")}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {ex.rows > 5 && (
+                          <button onClick={()=>toggleData(i)} style={{background:"none",border:"none",color:C.blue,fontSize:11,cursor:"pointer",padding:"4px 0",marginTop:4}}>
+                            {expandedData[i] ? "Show less ↑" : `Show all ${ex.rows} rows ↓`}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SQL toggle */}
+                    {ex.sql && (
+                      <div>
+                        <button onClick={()=>toggleSQL(i)} style={{background:"none",border:"none",color:C.muted,fontSize:11,cursor:"pointer",padding:"2px 0",display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontFamily:"monospace"}}>SQL</span>
+                          <span style={{fontSize:9}}>{expandedSQL[i]?"▲":"▼"}</span>
+                        </button>
+                        {expandedSQL[i] && (
+                          <pre style={{background:"rgba(0,0,0,0.3)",border:`1px solid ${C.border}`,borderRadius:6,padding:10,fontSize:11,color:"#94a3b8",overflow:"auto",whiteSpace:"pre-wrap",margin:"6px 0 0",fontFamily:"monospace"}}>
+                            {ex.sql}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input area */}
+      <div style={{flexShrink:0,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+        {error && <ErrMsg message={error} />}
         <div style={{display:"flex",gap:10}}>
-          <input value={question} onChange={e=>setQuestion(e.target.value)} onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&handleAsk()} placeholder="Ask anything about your supplier data..." style={{flex:1,background:"rgba(255,255,255,0.06)",border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"10px 14px",fontSize:13,fontFamily:"inherit"}} />
-          <button onClick={handleAsk} disabled={loading||!question.trim()} style={{background:"rgba(96,165,250,0.2)",border:`1px solid ${C.blue}`,color:C.blue,borderRadius:6,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:loading?"not-allowed":"pointer",opacity:(loading||!question.trim())?0.5:1,whiteSpace:"nowrap"}}>
-            {loading?"Thinking...":"Ask →"}
+          <input
+            ref={inputRef}
+            value={question}
+            onChange={e=>setQuestion(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&handleAsk()}
+            placeholder={hasConversation ? "Ask a follow-up question..." : "Ask anything about your supplier data..."}
+            style={{flex:1,background:"rgba(255,255,255,0.06)",border:`1px solid ${loading?C.blue:C.border}`,color:C.text,borderRadius:8,padding:"10px 14px",fontSize:13,fontFamily:"inherit",outline:"none",transition:"border-color 0.15s"}}
+          />
+          <button onClick={handleAsk} disabled={loading||!question.trim()}
+            style={{background:"rgba(96,165,250,0.2)",border:`1px solid ${C.blue}`,color:C.blue,borderRadius:8,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:loading||!question.trim()?"not-allowed":"pointer",opacity:loading||!question.trim()?0.5:1,whiteSpace:"nowrap"}}>
+            {loading ? "..." : "Ask →"}
           </button>
         </div>
-        <div style={{marginTop:12,display:"flex",gap:8,flexWrap:"wrap"}}>
-          {examples.map((ex,i)=>(<button key={i} onClick={()=>setQuestion(ex)} style={{background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,color:C.muted,borderRadius:20,padding:"4px 12px",fontSize:11,cursor:"pointer"}}>{ex}</button>))}
-        </div>
-      </Card>
-
-      {error&&<ErrMsg message={error}/>}
-      {loading&&<Spinner/>}
-
-      {result&&(
-        <div style={{display:"flex",flexDirection:"column",gap:16}}>
-          <Card>
-            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>Result — {fmt.num(result.rows)} rows</div>
-            {result.data?.length>0?(
-              <div style={{overflowX:"auto"}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead>
-                    <tr style={{borderBottom:`1px solid ${C.border}`}}>
-                      {Object.keys(result.data[0]).map(col=>(
-                        <th key={col} style={{padding:"8px 12px",textAlign:"left",color:C.muted,fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap"}}>{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.data.map((row,i)=>(
-                      <tr key={i} style={{borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
-                        {Object.values(row).map((val,j)=>(
-                          <td key={j} style={{padding:"8px 12px",color:C.text,fontFamily:typeof val==="number"?"monospace":"inherit"}}>
-                            {typeof val==="number"?(+val).toLocaleString(undefined,{maximumFractionDigits:2}):String(val??"—")}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ):<div style={{color:C.muted,fontSize:13,padding:"20px 0"}}>No results returned.</div>}
-          </Card>
-          <Card>
-            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>SQL Generated</div>
-            <pre style={{background:"rgba(0,0,0,0.3)",border:`1px solid ${C.border}`,borderRadius:6,padding:12,fontSize:11,color:"#94a3b8",overflow:"auto",whiteSpace:"pre-wrap",margin:0,fontFamily:"monospace"}}>{result.sql}</pre>
-          </Card>
-        </div>
-      )}
+        {hasConversation && (
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.2)",marginTop:6,textAlign:"center"}}>
+            Claude remembers this conversation · {exchanges.length}/10 turns used
+          </div>
+        )}
+      </div>
     </div>
   );
 }
