@@ -12,3 +12,8 @@ seed_output/
 node_modules/
 .DS_Store
 enrich_checkpoint.json
+control_plane/agent/
+firebase-service-account.json
+control_plane/frontend/.env
+control_plane/static/
+.firebase/

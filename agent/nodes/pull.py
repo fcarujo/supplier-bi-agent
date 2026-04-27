@@ -171,6 +171,8 @@ STRICT RULES:
 - Maximum 12 columns in SELECT
 - Always use full table path: `{project}.{dataset}.{table_name}`
 - Return ONLY the SQL — no explanation, no markdown{supplier_context}
+- Never use SUM(bool_column) — BigQuery does not support it. Always use SUM(CASE WHEN bool_column THEN 1 ELSE 0 END)
+- hasIncident and hasReturn are BOOL columns — never SUM them directly
 
 The Analyse node handles all cross-table logic. Your job is one clean flat aggregation.
 
@@ -340,7 +342,7 @@ def pull_node(state: dict) -> dict:
 
         # ── Validate row count ────────────────────────────────────────────────
         warnings = []
-        if row_count < min_rows:
+        if row_count < min_rows and table_name != "suppliers":
             warnings.append(
                 f"Low row count ({row_count}) — report may not be statistically meaningful"
             )

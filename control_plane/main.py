@@ -18,12 +18,88 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from google.cloud import bigquery
 from pydantic import BaseModel
+
+# ── Firebase Admin — JWT verification ────────────────────────────────────────
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
+
+_firebase_app = None
+
+def _get_firebase_app():
+    global _firebase_app
+    if _firebase_app is None:
+        sa_path = Path(__file__).parent.parent / "firebase-service-account.json"
+        if sa_path.exists():
+            cred = credentials.Certificate(str(sa_path))
+            _firebase_app = firebase_admin.initialize_app(cred)
+        else:
+            # In Cloud Run use Application Default Credentials
+            _firebase_app = firebase_admin.initialize_app()
+    return _firebase_app
+
+_get_firebase_app()
+
+
+class AuthUser:
+    def __init__(self, uid: str, email: str, role: str, supplier_id: Optional[str] = None):
+        self.uid         = uid
+        self.email       = email
+        self.role        = role          # "admin" | "business" | "supplier"
+        self.supplier_id = supplier_id   # set for role=supplier only
+
+
+def get_current_user(request: Request) -> AuthUser:
+    """FastAPI dependency — verifies Firebase JWT and extracts role claims."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    token = auth_header.split("Bearer ", 1)[1].strip()
+    try:
+        decoded = firebase_auth.verify_id_token(token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+
+    role        = decoded.get("role")
+    supplier_id = decoded.get("supplierID")
+
+    if not role:
+        raise HTTPException(status_code=403, detail="No role assigned to this account")
+
+    return AuthUser(
+        uid         = decoded["uid"],
+        email       = decoded.get("email", ""),
+        role        = role,
+        supplier_id = supplier_id,
+    )
+
+
+def require_admin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """Only admin role — write operations (decisions, queue management)."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def require_internal(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """Admin, business, or demo role — internal dashboard access."""
+    if user.role not in ("admin", "business", "demo"):
+        raise HTTPException(status_code=403, detail="Internal access required")
+    return user
+
+
+def require_reporter(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """Admin or business role — can create reports. Demo cannot."""
+    if user.role not in ("admin", "business"):
+        raise HTTPException(status_code=403, detail="Reporter access required")
+    return user
+
 
 # ── Agent import — must be at module level so it resolves at container startup
 sys.path.insert(0, "/app")
@@ -136,10 +212,10 @@ def health():
     return {"status": "ok", "project": GCP_PROJECT, "dataset": BQ_DATASET}
 
 
-# ── GET /api/queue ────────────────────────────────────────────────────────────
+# ── GET /api/queue  (admin only) ──────────────────────────────────────────────
 
 @app.get("/api/queue")
-def get_queue():
+def get_queue(user: AuthUser = Depends(require_admin)):
     client = bq()
     rows = list(client.query(f"""
         SELECT
@@ -172,10 +248,10 @@ def get_queue():
     return {"queue": results, "total": len(results)}
 
 
-# ── GET /api/runs/{run_id} ────────────────────────────────────────────────────
+# ── GET /api/runs/{run_id}  (admin only) ──────────────────────────────────────
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: str):
+def get_run(run_id: str, user: AuthUser = Depends(require_reporter)):
     client = bq()
     run_rows = list(client.query(f"""
         SELECT * FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
@@ -221,13 +297,27 @@ def get_run(run_id: str):
     if dec_rows:
         run["humanDecision"] = _row_to_dict(dec_rows[0])
 
+    # If narrative not yet found, check approved_reports (post-decision)
+    if not run.get("reportNarrative"):
+        approved_rows = list(client.query(f"""
+            SELECT reportNarrative, reportDate, approvedBy, approvedAt
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+            WHERE agentRunID = '{run_id}'
+            ORDER BY approvedAt DESC LIMIT 1
+        """).result())
+        if approved_rows:
+            a = _row_to_dict(approved_rows[0])
+            run["reportNarrative"] = a.get("reportNarrative")
+            run["approvedBy"]      = a.get("approvedBy")
+            run["approvedAt"]      = a.get("approvedAt")
+
     return run
 
 
-# ── GET /api/runs/{run_id}/status ─────────────────────────────────────────────
+# ── GET /api/runs/{run_id}/status  (admin only) ───────────────────────────────
 
 @app.get("/api/runs/{run_id}/status")
-def get_run_status(run_id: str):
+def get_run_status(run_id: str, user: AuthUser = Depends(require_reporter)):
     client = bq()
 
     pending = list(client.query(f"""
@@ -265,13 +355,27 @@ def get_run_status(run_id: str):
     if not rows:
         return {"runID": run_id, "status": "running"}
     r = dict(rows[0])
-    return {"runID": run_id, "status": r.get("status") or "running", "confidence": r.get("confidence"), "policyDecision": r.get("policyDecision")}
+    agent_status = r.get("status") or "running"
+    # If agent_runs shows running but row exists in pending_reports
+    # (streaming buffer may hide it from SELECT above), treat as pending_review
+    if agent_status == "running":
+        try:
+            pr = list(client.query(f"""
+                SELECT COUNT(*) as cnt
+                FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
+                WHERE runID = '{run_id}'
+            """).result())
+            if pr and dict(pr[0]).get("cnt", 0) > 0:
+                agent_status = "pending_review"
+        except Exception:
+            pass
+    return {"runID": run_id, "status": agent_status, "confidence": r.get("confidence"), "policyDecision": r.get("policyDecision")}
 
 
-# ── POST /api/decisions ───────────────────────────────────────────────────────
+# ── POST /api/decisions  (admin only) ─────────────────────────────────────────
 
 @app.post("/api/decisions")
-def post_decision(body: DecisionRequest):
+def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_reporter)):
     client      = bq()
     decision_id = str(uuid.uuid4())
     now         = datetime.now(timezone.utc).isoformat()
@@ -304,16 +408,22 @@ def post_decision(body: DecisionRequest):
     if errors:
         raise HTTPException(status_code=500, detail=f"Failed to write decision: {errors}")
 
-    client.query(f"""
-        UPDATE `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
-        SET status = 'decided' WHERE runID = '{body.runID}'
-    """).result()
+    try:
+        client.query(f"""
+            UPDATE `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
+            SET status = 'decided' WHERE runID = '{body.runID}'
+        """).result()
+    except Exception:
+        pass  # Row may still be in streaming buffer — safe to ignore
 
     agent_status = "approved" if body.decision in ("approved", "edited_and_approved") else "rejected"
-    client.query(f"""
-        UPDATE `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
-        SET status = '{agent_status}' WHERE runID = '{body.runID}'
-    """).result()
+    try:
+        client.query(f"""
+            UPDATE `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            SET status = '{agent_status}' WHERE runID = '{body.runID}'
+        """).result()
+    except Exception:
+        pass  # Row may still be in streaming buffer — safe to ignore
 
     if body.decision in ("approved", "edited_and_approved") and body.shareWithSupplier and supplier_id:
         narrative = body.editedNarrative or _get_pending_field(client, body.runID, "reportNarrative")
@@ -339,10 +449,10 @@ def post_decision(body: DecisionRequest):
     return {"decisionID": decision_id, "runID": body.runID, "decision": body.decision, "decidedAt": now, "sharedWithSupplier": bool(body.shareWithSupplier)}
 
 
-# ── GET /api/history ──────────────────────────────────────────────────────────
+# ── GET /api/history  (admin only) ────────────────────────────────────────────
 
 @app.get("/api/history")
-def get_history(limit: int = 50):
+def get_history(limit: int = 50, user: AuthUser = Depends(require_reporter)):
     client = bq()
     rows = list(client.query(f"""
         SELECT
@@ -357,10 +467,10 @@ def get_history(limit: int = 50):
     return {"history": [_row_to_dict(r) for r in rows], "total": len(rows)}
 
 
-# ── GET /api/suppliers ────────────────────────────────────────────────────────
+# ── GET /api/suppliers  (internal: admin + business) ──────────────────────────
 
 @app.get("/api/suppliers")
-def get_suppliers():
+def get_suppliers(user: AuthUser = Depends(require_internal)):
     client = bq()
     rows = list(client.query(f"""
         SELECT supplierID, supplierName, supplierTier, supplierRegion, categorySpeciality
@@ -370,12 +480,13 @@ def get_suppliers():
     return {"suppliers": [_row_to_dict(r) for r in rows]}
 
 
-# ── GET /api/dashboard/business ───────────────────────────────────────────────
+# ── GET /api/dashboard/business  (internal: admin + business) ─────────────────
 
 @app.get("/api/dashboard/business")
 def get_business_dashboard(
     date_from: Optional[str] = None,
     date_to:   Optional[str] = None,
+    user:      AuthUser      = Depends(require_internal),
 ):
     client       = bq()
     order_filter = _build_date_filter(date_from, date_to)
@@ -485,13 +596,22 @@ def get_business_dashboard(
 
 
 # ── GET /api/dashboard/supplier/{supplier_id} ─────────────────────────────────
+# Admin/business see any supplier. Supplier role sees only their own.
 
 @app.get("/api/dashboard/supplier/{supplier_id}")
 def get_supplier_dashboard(
     supplier_id: str,
     date_from:   Optional[str] = None,
     date_to:     Optional[str] = None,
+    user:        AuthUser      = Depends(get_current_user),
 ):
+    # Suppliers can only see their own data
+    if user.role == "supplier":
+        if user.supplier_id != supplier_id:
+            raise HTTPException(status_code=403, detail="Access denied to this supplier's data")
+    elif user.role not in ("admin", "business"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     client       = bq()
     order_filter = _build_date_filter(date_from, date_to)
     inc_filter   = _build_date_filter(date_from, date_to, "o")
@@ -656,10 +776,10 @@ def get_supplier_dashboard(
     }
 
 
-# ── POST /api/runs ────────────────────────────────────────────────────────────
+# ── POST /api/runs  (admin only) ──────────────────────────────────────────────
 
 @app.post("/api/runs")
-def trigger_run(body: RunRequest):
+def trigger_run(body: RunRequest, user: AuthUser = Depends(require_reporter)):
     import threading
 
     run_id = str(uuid.uuid4())
@@ -682,10 +802,13 @@ def trigger_run(body: RunRequest):
     return {"runID": run_id, "status": "running"}
 
 
-# ── POST /api/ask/session ─────────────────────────────────────────────────────
+# ── POST /api/ask/session  (internal: admin + business) ───────────────────────
 
 @app.post("/api/ask/session")
-def create_session(supplierID: Optional[str] = None):
+def create_session(
+    supplierID: Optional[str] = None,
+    user:       AuthUser      = Depends(require_internal),
+):
     global _sessions
     if len(_sessions) >= MAX_SESSIONS:
         oldest = min(_sessions.items(), key=lambda x: x[1]["created_at"])
@@ -700,19 +823,19 @@ def create_session(supplierID: Optional[str] = None):
     return {"sessionID": session_id, "supplierID": supplierID}
 
 
-# ── DELETE /api/ask/session/{session_id} ──────────────────────────────────────
+# ── DELETE /api/ask/session/{session_id}  (internal) ──────────────────────────
 
 @app.delete("/api/ask/session/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: AuthUser = Depends(require_internal)):
     if session_id in _sessions:
         del _sessions[session_id]
     return {"sessionID": session_id, "deleted": True}
 
 
-# ── GET /api/ask/session/{session_id} ────────────────────────────────────────
+# ── GET /api/ask/session/{session_id}  (internal) ─────────────────────────────
 
 @app.get("/api/ask/session/{session_id}")
-def get_session(session_id: str):
+def get_session(session_id: str, user: AuthUser = Depends(require_internal)):
     if session_id not in _sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     session = _sessions[session_id]
@@ -725,10 +848,10 @@ def get_session(session_id: str):
     }
 
 
-# ── POST /api/ask ─────────────────────────────────────────────────────────────
+# ── POST /api/ask  (internal: admin + business) ───────────────────────────────
 
 @app.post("/api/ask")
-def ask_question(body: AskRequest):
+def ask_question(body: AskRequest, user: AuthUser = Depends(require_internal)):
     import yaml
     from anthropic import Anthropic
 
@@ -858,11 +981,10 @@ Available tables:
     return {"question": body.question, "sql": sql, "data": data, "rows": len(data), "sessionID": session_id}
 
 
-# ── GET /api/insights/current ─────────────────────────────────────────────────
+# ── GET /api/insights/current  (internal: admin + business) ───────────────────
 
 @app.get("/api/insights/current")
-def get_insights_current():
-    """Returns the most recent auto-published digest and its alerts for the dashboard banner."""
+def get_insights_current(user: AuthUser = Depends(require_internal)):
     client = bq()
 
     digest_rows = list(client.query(f"""
@@ -899,11 +1021,10 @@ def get_insights_current():
     }
 
 
-# ── GET /api/insights/history ─────────────────────────────────────────────────
+# ── GET /api/insights/history  (internal: admin + business) ───────────────────
 
 @app.get("/api/insights/history")
-def get_insights_history():
-    """Returns last 4 weeks of alerts grouped by week for the expanded view."""
+def get_insights_history(user: AuthUser = Depends(require_internal)):
     client = bq()
 
     rows = list(client.query(f"""
@@ -939,6 +1060,140 @@ def get_insights_history():
 
     return {"weeks": list(weeks.values())}
 
+
+
+# ── GET /api/reports  (internal: admin + business) ────────────────────────────
+
+@app.get("/api/reports")
+def get_reports(limit: int = 20, user: AuthUser = Depends(require_reporter)):
+    client = bq()
+    rows = list(client.query(f"""
+        SELECT
+            reportID, supplierID, reportType, audience,
+            reportDate, approvedAt, approvedBy,
+            reportNarrative, confidence
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+        ORDER BY approvedAt DESC
+        LIMIT {limit}
+    """).result())
+    return {"reports": [_row_to_dict(r) for r in rows]}
+
+
+# ── GET /api/recent-reports  (reporter: admin + business) ────────────────────
+
+@app.get("/api/recent-reports")
+def get_recent_reports(limit: int = 10, user: AuthUser = Depends(require_reporter)):
+    """
+    Returns the last N runs with narrative sourced from the correct table:
+    - pending_review / pending  → narrative from pending_reports
+    - approved / auto_approved  → narrative from approved_reports
+    - rejected                  → narrative from pending_reports + rejection reason
+    """
+    client = bq()
+
+    # Get recent runs
+    run_rows = list(client.query(f"""
+        WITH latest_runs AS (
+            SELECT runID, reportType, audience, supplierID,
+                   status, confidence, policyDecision,
+                   MAX(startedAt) AS startedAt
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE reportType IN ('adhoc_business','adhoc_supplier')
+            GROUP BY runID, reportType, audience, supplierID, status, confidence, policyDecision
+        ),
+        deduped AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
+            FROM latest_runs
+        )
+        SELECT
+            r.runID, r.reportType, r.audience, r.supplierID,
+            r.status, r.confidence, r.startedAt, r.policyDecision,
+            d.decision, d.reviewer, d.reason, d.decidedAt
+        FROM deduped r
+        LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.human_decisions` d ON r.runID = d.runID
+        WHERE r.rn = 1
+        ORDER BY r.startedAt DESC
+        LIMIT {limit}
+    """).result())
+
+    if not run_rows:
+        return {"reports": []}
+
+    run_ids = [dict(r)["runID"] for r in run_rows]
+    ids_str  = ", ".join(f"'{rid}'" for rid in run_ids)
+
+    # Fetch narratives from pending_reports
+    pending_narratives = {}
+    try:
+        pr_rows = list(client.query(f"""
+            SELECT runID, reportNarrative, status, confidence, queuedAt
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
+            WHERE runID IN ({ids_str})
+        """).result())
+        for r in pr_rows:
+            d = _row_to_dict(r)
+            pending_narratives[d["runID"]] = d
+    except Exception:
+        pass
+
+    # Fetch narratives from approved_reports
+    approved_narratives = {}
+    try:
+        ar_rows = list(client.query(f"""
+            SELECT agentRunID, reportNarrative, approvedBy, approvedAt, audience
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+            WHERE agentRunID IN ({ids_str})
+            ORDER BY approvedAt DESC
+        """).result())
+        for r in ar_rows:
+            d = _row_to_dict(r)
+            rid = d["agentRunID"]
+            if rid not in approved_narratives:
+                approved_narratives[rid] = d
+    except Exception:
+        pass
+
+    results = []
+    for row in run_rows:
+        run = _row_to_dict(row)
+        rid = run["runID"]
+        decision = run.get("decision") or run.get("status") or "running"
+
+        # Source narrative from correct table
+        narrative    = None
+        approved_by  = None
+        approved_at  = None
+
+        if decision in ("approved", "edited_and_approved", "auto_approved"):
+            ar = approved_narratives.get(rid)
+            if ar:
+                narrative   = ar.get("reportNarrative")
+                approved_by = ar.get("approvedBy")
+                approved_at = ar.get("approvedAt")
+        else:
+            pr = pending_narratives.get(rid)
+            if pr:
+                narrative = pr.get("reportNarrative")
+                if not run.get("confidence") and pr.get("confidence"):
+                    run["confidence"] = pr["confidence"]
+
+        run["reportNarrative"] = narrative
+        run["approvedBy"]      = approved_by
+        run["approvedAt"]      = approved_at
+
+        # Determine display status
+        if decision in ("pending_review", "pending", "pending_publish", "escalated", "running"):
+            run["displayStatus"] = "pending_review"
+        elif decision in ("approved", "edited_and_approved", "auto_approved"):
+            run["displayStatus"] = "approved"
+        elif decision == "rejected":
+            run["displayStatus"] = "rejected"
+        else:
+            run["displayStatus"] = "pending_review"  # default to awaiting review
+
+        results.append(run)
+
+    return {"reports": results}
 
 # ── Serve React frontend ──────────────────────────────────────────────────────
 
