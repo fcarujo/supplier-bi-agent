@@ -349,21 +349,21 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
         <div class="phase-dot" style="background:#ec4899"></div>
         <div class="phase-title-wrap">
           <div class="phase-name">Phase 7 — Supplier portal</div>
-          <div class="phase-timeline">after PoC validated · private supplier-facing web app · Firebase Auth · React</div>
+          <div class="phase-timeline">In progress · Firebase Auth ✓ · agentic-intel.de ✓ · JWT middleware ✓ · Supplier portal ✓ · Multi-role access ✓ · Dark/light theme ✓ · Demo role ✓ · Recent Reports ✓</div>
         </div>
         <div class="phase-meta"><div class="phase-count" id="ph-count-6">0 / 9</div><div class="phase-chevron">›</div></div>
       </div>
       <div class="phase-body">
         <div class="group-label">Auth &amp; identity</div>
         <ul class="task-list" id="ph-tasks-6">
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Set up Firebase Authentication: email/password + Google login · create one account per supplier mapped to their supplierID</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Add Firebase Auth middleware to Cloud Run: supplier routes require a valid Firebase JWT · internal control plane routes require a separate admin role</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Set up Firebase Authentication: email/password + Google login · create one account per supplier mapped to their supplierID</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Add Firebase Auth middleware to Cloud Run: supplier routes require a valid Firebase JWT · internal control plane routes require a separate admin role</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Verify row-level security end-to-end: a logged-in supplier can only see their own supplierID data · test with two different supplier accounts to confirm isolation</span></li>
           <div class="group-label">Supplier portal views (React — same Cloud Run app, new routes)</div>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Landing page: login screen with supplier branding · redirects to dashboard on successful auth</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Dashboard view: latest report — key metrics, incident rate, return rate, resolution cost, trend charts · filtered to their supplierID from approved_reports table</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Landing page: login screen with supplier branding · redirects to dashboard on successful auth</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Dashboard view: latest report — key metrics, incident rate, return rate, resolution cost, trend charts · filtered to their supplierID from approved_reports table</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Customer Voice view: suppliers see their sku_comment_intelligence data directly — flagged SKUs, root causes, improvement priorities · not just in reports</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">SKU drill-down: filter by category and SKU · incident types and return reasons at product level · improvement plan per flagged SKU</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">SKU drill-down: filter by category and SKU · incident types and return reasons at product level · improvement plan per flagged SKU</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Report history: all past monthly reports for that supplier · downloadable as PDF</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Notification system: email or Slack alert when a new report is shared or a critical insight is flagged for their account</span></li>
         </ul>
