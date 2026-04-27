@@ -52,7 +52,7 @@ Orders / Incidents / Returns / Suppliers
     Control Plane (FastAPI + React)
     Queue · Dashboards · New Report · Ask · Observability
               ↓
-    Cloud Run (europe-west2)
+    Cloud Run (europe-west2) · agentic-intel.de
 ```
 
 ---
@@ -161,13 +161,24 @@ Three independent layers — an attacker must bypass all three simultaneously.
 - *Business Overview* — Weekly insights banner (digest + severity-rated alerts + 4-week history), 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown, resolution mix. Cross-filtering on all charts.
 - *Supplier Account* — Metrics + portfolio benchmark scorecards, category charts, SKU incident & return tables, return reasons, incident type breakdown, resolution mix. Cross-filtering on category and incident type.
 
-**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion → Internal Only or Share with Supplier.
+**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion → Internal Only or Share with Supplier. Recent Reports section shows all past ad-hoc runs with narrative, accessible regardless of session.
 
 **Ask** — Conversational natural language → BigQuery SQL → answer table. Multi-turn session with context memory. SQL shown transparently per answer. Auto-corrects SQL errors up to 3 times.
 
 **Observability** — Full run history with confidence scores, decisions, and reviewer names.
 
-**Supplier Portal** — Route `/supplier/:id` shows a clean supplier-facing view with their dashboard data and any reports shared with them. No internal metrics, no governance UI.
+**Supplier Portal** — Authenticated supplier-facing view at agentic-intel.de. Scoped to their `supplierID` — they see only their own data, charts, and any reports shared with them by account managers. No internal metrics, no governance UI.
+
+---
+
+## Auth
+
+Firebase Authentication with custom claims. Four roles enforced at both the React layer and the FastAPI JWT middleware.
+
+- `admin` — full control plane including queue decisions and report creation
+- `business` — dashboards, ask, new report (no queue/observability)
+- `demo` — read-only across all views, no write operations
+- `supplier` — portal only, data scoped to their supplierID
 
 ---
 
@@ -224,13 +235,18 @@ supplier-bi-agent/
 │       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns
 │       └── policies.yaml         # Auto-approve rules per report type
 ├── control_plane/
-│   ├── main.py                   # FastAPI — all endpoints, parallel queries, session store, insights
+│   ├── main.py                   # FastAPI — all endpoints, JWT middleware, session store, insights
 │   ├── requirements.txt          # Python dependencies
 │   ├── Dockerfile                # Multi-stage: Node build + Python serve
 │   └── frontend/
 │       └── src/
-│           └── App.jsx           # React control plane — all tabs + insights banner
+│           ├── App.jsx           # React control plane — all tabs, supplier portal, auth
+│           └── firebase.js       # Firebase Auth initialisation
+├── scripts/
+│   └── set_firebase_claims.py    # Set role claims on Firebase accounts
 ├── Dockerfile                    # Project-root entry for Cloud Run builds
+├── firebase.json                 # Firebase Hosting → Cloud Run proxy
+├── .firebaserc                   # Firebase project config
 ├── .gitignore
 └── test_agent.py                 # Integration tests
 ```
@@ -247,4 +263,4 @@ supplier-bi-agent/
 | 4 — Semantic control plane | ✅ Complete | Validation, policy engine, React audit UI |
 | 5 — Dashboards & deployment | ✅ Complete | React dashboards, ad-hoc, NL BI, Cloud Run |
 | 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Conversational Query, Insight Agent |
-| 7 — Supplier portal | ⬜ Planned | Firebase Auth, row-level security, supplier self-serve |
+| 7 — Supplier portal | 🔄 In progress | Firebase Auth · agentic-intel.de · JWT middleware · multi-role access · supplier portal |
