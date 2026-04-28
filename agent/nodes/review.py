@@ -36,6 +36,15 @@ def _write_to_pending_reports(
     table_id   = f"{project}.{dataset}.pending_reports"
     validation = state.get("validation", {})
 
+    # Merge policy_outcome into reportJSON so frontend can display rule results
+    report_json = state.get("report_json", {}) or {}
+    if isinstance(report_json, str):
+        try:
+            report_json = json.loads(report_json)
+        except Exception:
+            report_json = {}
+    report_json_with_policy = {**report_json, "policy_outcome": policy_outcome}
+
     row = {
         "runID":             state.get("run_id"),
         "reportType":        state["report_type"],
@@ -49,7 +58,7 @@ def _write_to_pending_reports(
         "validationFailed":  validation.get("failed", 0),
         "hallucinationFlags":validation.get("hallucination_flags", 0),
         "reportNarrative":   state.get("report_narrative"),
-        "reportJSON":        json.dumps(state.get("report_json", {}), default=str),
+        "reportJSON":        json.dumps(report_json_with_policy, default=str),
         "errors":            json.dumps(state.get("errors", []), default=str),
     }
 

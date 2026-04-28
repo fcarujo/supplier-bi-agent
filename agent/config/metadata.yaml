@@ -20,6 +20,163 @@
 project: supplier-bi-agent-2025
 dataset: supplier_bi
 
+# ── Column schema definitions (used by ad-hoc LLM SQL generation) ─────────────
+# These descriptions are injected into the LLM prompt so it knows exactly
+# what each column contains, its type, and how to use it correctly in SQL.
+
+column_schemas:
+  orders:
+    description: "Order-level transaction data. One row per order."
+    columns:
+      orderID:
+        type: STRING
+        description: "Unique order identifier. Use COUNT(orderID) for order counts."
+      supplierID:
+        type: STRING
+        description: "Supplier identifier e.g. SUP001, SUP004. Always filter with exact value including 'SUP' prefix."
+      productCategory:
+        type: STRING
+        description: "Product category e.g. 'Electronics', 'Toys & Games', 'Sports & Outdoors', 'Kitchen & Dining', 'Home & Garden', 'Clothing & Apparel', 'Beauty & Health'."
+      productSKU:
+        type: STRING
+        description: "Product SKU code e.g. TOY-0040, ELC-0011."
+      orderDate:
+        type: DATE
+        description: "Date the order was placed. Use for all date filtering and period comparisons."
+      grossRevenue:
+        type: FLOAT
+        description: "Total order revenue before deductions. Use SUM(grossRevenue) for sales totals."
+      netRevenue:
+        type: FLOAT
+        description: "Revenue after returns and discounts. Internal use only."
+      productCost:
+        type: FLOAT
+        description: "Cost of goods sold for this order."
+      fulfilmentChannel:
+        type: STRING
+        description: "How the order was fulfilled: 'warehouse', 'supplier_direct', or 'third_party_logistics'."
+      supplierTier:
+        type: STRING
+        description: "Supplier tier classification: 'preferred', 'standard', or 'probation'."
+      supplierRegion:
+        type: STRING
+        description: "Supplier geographic region e.g. 'North America', 'Europe', 'Asia Pacific'."
+      productPriceTier:
+        type: STRING
+        description: "Product price tier: 'budget', 'mid', or 'premium'."
+      hasIncident:
+        type: BOOL
+        description: "TRUE if this order had an incident. NEVER use SUM(hasIncident) — always use SUM(CASE WHEN hasIncident THEN 1 ELSE 0 END). For rate: ROUND(AVG(CASE WHEN hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2)."
+      hasReturn:
+        type: BOOL
+        description: "TRUE if this order was returned. NEVER use SUM(hasReturn) — always use SUM(CASE WHEN hasReturn THEN 1 ELSE 0 END). For rate: ROUND(AVG(CASE WHEN hasReturn THEN 1.0 ELSE 0.0 END) * 100, 2)."
+      unitQuantity:
+        type: INTEGER
+        description: "Number of units in this order. Use SUM(unitQuantity) for total units sold."
+
+  incidents:
+    description: "Incident records. One row per incident. Join to orders via orderID for date filtering."
+    columns:
+      incidentID:
+        type: STRING
+        description: "Unique incident identifier. Use COUNT(incidentID) for incident counts."
+      orderID:
+        type: STRING
+        description: "Foreign key to orders table."
+      supplierID:
+        type: STRING
+        description: "Supplier identifier. Must match exact format e.g. SUP004."
+      productCategory:
+        type: STRING
+        description: "Product category of the incident."
+      productSKU:
+        type: STRING
+        description: "Product SKU involved in the incident."
+      incidentDate:
+        type: DATE
+        description: "Date the incident was recorded. Use for incident-specific date filtering."
+      resolutionStatus:
+        type: STRING
+        description: "Current status: 'resolved' or 'open'."
+      incidentType:
+        type: STRING
+        description: "Type of incident: 'damage_defect', 'missing_parts', 'wrong_item', 'late_delivery', 'lost_in_transit', 'listing_inaccuracy'."
+      incidentResolution:
+        type: STRING
+        description: "How it was resolved: 'refund', 'replacement', 'partial_refund', 'store_credit', 'no_action'."
+      resolutionCost:
+        type: FLOAT
+        description: "Financial cost of resolving this incident. Use SUM(resolutionCost) for total cost."
+      productRating:
+        type: FLOAT
+        description: "Customer product rating 1-5. Use AVG(productRating) for average rating."
+      incidentCustomerComment:
+        type: STRING
+        description: "Verbatim customer comment about the incident. Do not aggregate — used for qualitative analysis."
+      daysBetweenPurchaseAndIncident:
+        type: INTEGER
+        description: "Number of days between order date and incident date."
+
+  returns:
+    description: "Return records. One row per return. Join to orders via orderID for date filtering."
+    columns:
+      returnID:
+        type: STRING
+        description: "Unique return identifier. Use COUNT(returnID) for return counts."
+      orderID:
+        type: STRING
+        description: "Foreign key to orders table."
+      supplierID:
+        type: STRING
+        description: "Supplier identifier. Must match exact format e.g. SUP004."
+      productCategory:
+        type: STRING
+        description: "Product category of the returned item."
+      productSKU:
+        type: STRING
+        description: "Product SKU that was returned."
+      returnDate:
+        type: DATE
+        description: "Date the return was processed."
+      resolutionStatus:
+        type: STRING
+        description: "Return resolution status: 'resolved' or 'open'."
+      buyersRemorseReason:
+        type: STRING
+        description: "Reason for return: 'not_as_described', 'changed_mind', 'defective', 'wrong_item', 'no_longer_needed', 'better_price_elsewhere'."
+      buyersRemorseComment:
+        type: STRING
+        description: "Verbatim customer return comment."
+      productRating:
+        type: FLOAT
+        description: "Customer product rating 1-5 at time of return."
+      daysBetweenPurchaseAndReturn:
+        type: INTEGER
+        description: "Number of days between order date and return date."
+
+  suppliers:
+    description: "Supplier master data. One row per supplier."
+    columns:
+      supplierID:
+        type: STRING
+        description: "Unique supplier identifier e.g. SUP001. Always use exact value including 'SUP' prefix."
+      supplierName:
+        type: STRING
+        description: "Full supplier name e.g. 'Apex Manufacturing Co', 'CoreTech Industries'."
+      supplierRegion:
+        type: STRING
+        description: "Supplier region: 'North America', 'Europe', 'Asia Pacific'."
+      supplierTier:
+        type: STRING
+        description: "Supplier tier: 'preferred', 'standard', or 'probation'."
+      categorySpeciality:
+        type: STRING
+        description: "Primary product category this supplier specialises in."
+      onboardingDate:
+        type: DATE
+        description: "Date the supplier was onboarded."
+
+
 # ── Report definitions ────────────────────────────────────────────────────────
 
 reports:
@@ -411,7 +568,6 @@ reports:
             r.supplierID, r.productSKU, r.productCategory, r.buyersRemorseReason, r.resolutionStatus
           ORDER BY total_returns DESC
 
-
       suppliers:
         allowed_columns:
           - supplierID
@@ -451,6 +607,7 @@ reports:
           - orderID
           - supplierID
           - productCategory
+          - productSKU
           - orderDate
           - grossRevenue
           - netRevenue
@@ -477,7 +634,6 @@ reports:
           - resolutionCost
           - productRating
           - incidentCustomerComment
-          - customerReview
           - daysBetweenPurchaseAndIncident
         filters: []
       returns:
@@ -492,7 +648,6 @@ reports:
           - buyersRemorseReason
           - buyersRemorseComment
           - productRating
-          - customerReview
           - daysBetweenPurchaseAndReturn
         filters: []
       suppliers:
@@ -545,7 +700,6 @@ reports:
           - resolutionCost
           - productRating
           - incidentCustomerComment
-          - customerReview
           - daysBetweenPurchaseAndIncident
         filters: []
       returns:
@@ -560,7 +714,6 @@ reports:
           - buyersRemorseReason
           - buyersRemorseComment
           - productRating
-          - customerReview
           - daysBetweenPurchaseAndReturn
         filters: []
       suppliers:

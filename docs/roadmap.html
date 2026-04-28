@@ -362,7 +362,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
           <div class="group-label">Supplier portal views (React — same Cloud Run app, new routes)</div>
           <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Landing page: login screen with supplier branding · redirects to dashboard on successful auth</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Dashboard view: latest report — key metrics, incident rate, return rate, resolution cost, trend charts · filtered to their supplierID from approved_reports table</span></li>
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Customer Voice view: suppliers see their sku_comment_intelligence data directly — flagged SKUs, root causes, improvement priorities · not just in reports</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Customer Voice view: suppliers see their sku_comment_intelligence data directly — flagged SKUs, root causes, improvement priorities · not just in reports</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">SKU drill-down: filter by category and SKU · incident types and return reasons at product level · improvement plan per flagged SKU</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Report history: all past monthly reports for that supplier · downloadable as PDF</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Notification system: email or Slack alert when a new report is shared or a critical insight is flagged for their account</span></li>
@@ -372,6 +372,44 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
     </div>
 
   </div>
+
+    <div class="phase" data-phase="7">
+      <div class="phase-head" onclick="togglePhase(this)">
+        <div class="phase-dot" style="background:#ec4899"></div>
+        <div class="phase-title-wrap">
+          <div class="phase-name">Phase 8 — Agent Self-Correction &amp; Feedback Loop</div>
+          <div class="phase-timeline">Planned · rejection as agent input · SQL auto-correction · human feedback loop</div>
+        </div>
+        <div class="phase-meta"><div class="phase-count" id="ph-count-7">0 / 9</div><div class="phase-chevron">›</div></div>
+      </div>
+      <div class="phase-body">
+        <div class="group-label">Rejection feedback loop</div>
+        <ul class="task-list" id="ph-tasks-7">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">When a report is rejected with a reason, automatically trigger a re-run with the rejection reason injected into the Pull node prompt · the agent corrects its SQL and logic based on human feedback</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Store rejection reason against the original run · link re-run to parent run for audit trail · show rejection lineage in Observability tab</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Limit re-run attempts to 2 per original run · if second re-run also rejected, escalate to admin with both rejection reasons</span></li>
+        </ul>
+        <div class="group-label">SQL auto-correction (completed)</div>
+        <ul class="task-list" id="ph-tasks-7b">
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">When a BigQuery query fails, feed the exact error back to the LLM with the allowed column list · up to 2 correction attempts before giving up</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Enrich metadata.yaml column_schemas with types and descriptions so LLM generates correct SQL · reduce invented column names</span></li>
+        </ul>
+        <div class="group-label">Confidence &amp; goal awareness (completed)</div>
+        <ul class="task-list" id="ph-tasks-7c">
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Pass goal through entire pipeline so each node focuses only on what was asked · eliminate irrelevant sections in ad-hoc reports</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Fix validation false negatives: skip comparisons where ground truth returns 0 due to date filter mismatch</span></li>
+        </ul>
+        <div class="group-label">Security &amp; notifications</div>
+        <ul class="task-list" id="ph-tasks-7d">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Implement BigQuery row-level access policies · supplier queries enforced at data layer not just application layer</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Add notification system · email or Slack alert when report is shared with supplier or critical insight is flagged</span></li>
+        </ul>
+      </div>
+      <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-7" style="width:0%;background:#ec4899"></div></div>
+    </div>
+
+  </div>
+
   <div class="footer">Checkboxes saved in your browser · open locally to persist state between sessions</div>
 </div>
 
@@ -604,7 +642,7 @@ function switchTab(name,btn){document.querySelectorAll('.tab-btn').forEach(b=>b.
 function togglePhase(head){head.closest('.phase').classList.toggle('open');}
 function toggleSec(head){head.closest('.sec-card').classList.toggle('open');}
 function taskChanged(){
-  let td=0,ta=0,pd=0;const np=7;
+  let td=0,ta=0,pd=0;const np=8;
   for(let p=0;p<np;p++){
     const el=document.getElementById('ph-tasks-'+p);if(!el)continue;
     const cbs=el.querySelectorAll('.task-cb');

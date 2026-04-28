@@ -18,7 +18,6 @@ async function apiFetch(path, options = {}) {
 // ── Tokens ────────────────────────────────────────────────────────────────────
 const DARK  = { bg: "#0a0e1a", surface: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.08)", text: "#e2e8f0", muted: "#64748b", blue: "#60a5fa", green: "#22c55e", amber: "#f59e0b", red: "#ef4444", purple: "#a855f7", teal: "#2dd4bf" };
 const LIGHT = { bg: "#f8f9fc", surface: "#ffffff", border: "rgba(0,0,0,0.1)", text: "#1a1f2e", muted: "#64748b", blue: "#2563eb", green: "#16a34a", amber: "#d97706", red: "#dc2626", purple: "#7c3aed", teal: "#0d9488" };
-// C is a mutable proxy — App.setTheme() updates its properties in place
 const C = { ...DARK };
 function applyTheme(t) { const src = t === "light" ? LIGHT : DARK; Object.keys(src).forEach(k => C[k] = src[k]); }
 const COLORS = ["#60a5fa","#22c55e","#f59e0b","#ef4444","#a855f7","#2dd4bf","#fb923c","#f472b6"];
@@ -31,16 +30,12 @@ const fmt = {
   month: s => s ? new Date(s+"-01").toLocaleDateString("en-GB",{month:"short",year:"2-digit"}) : s,
   label: t => ({weekly_supplier_overview:"Weekly Overview",monthly_supplier_overview:"Monthly Overview",monthly_supplier_account:"Supplier Account",adhoc_business:"Ad-hoc Business",adhoc_supplier:"Ad-hoc Supplier",nl_query:"NL Query"}[t]||t),
 };
-const confColor = c => c>=0.85?C.green:c>=0.75?C.amber:C.red;
+function confColor(c) { return c>=0.85?C.green:c>=0.75?C.amber:C.red; }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
-const Card = ({children,style={}}) => <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px",...style}}>{children}</div>;
-const SLabel = ({children}) => <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10,marginTop:20}}>{children}</div>;
-const Chip = ({label,active,onClick}) => (
-  <button onClick={onClick} style={{background:active?"rgba(96,165,250,0.2)":C.surface,border:`1px solid ${active?C.blue:C.border}`,color:active?C.blue:C.muted,borderRadius:20,padding:"3px 12px",fontSize:11,cursor:"pointer",transition:"all 0.15s"}}>
-    {label}
-  </button>
-);
+function Card({children,style={}}) { return <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px",...style}}>{children}</div>; }
+function SLabel({children}) { return <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10,marginTop:20}}>{children}</div>; }
+function Chip({label,active,onClick}) { return <button onClick={onClick} style={{background:active?"rgba(96,165,250,0.2)":C.surface,border:`1px solid ${active?C.blue:C.border}`,color:active?C.blue:C.muted,borderRadius:20,padding:"3px 12px",fontSize:11,cursor:"pointer",transition:"all 0.15s"}}>{label}</button>; }
 
 function Badge({children,variant="default"}) {
   const s={default:{bg:C.surface,fg:C.muted},business:{bg:"rgba(59,130,246,0.15)",fg:C.blue},supplier:{bg:"rgba(20,184,166,0.15)",fg:C.teal},approved:{bg:"rgba(34,197,94,0.15)",fg:C.green},rejected:{bg:"rgba(239,68,68,0.15)",fg:C.red},pending:{bg:"rgba(245,158,11,0.15)",fg:C.amber},pass:{bg:"rgba(34,197,94,0.12)",fg:C.green},fail:{bg:"rgba(239,68,68,0.12)",fg:C.red}};
@@ -66,7 +61,7 @@ function ConfMeter({value}) {
 function Spinner() { return <div style={{display:"flex",justifyContent:"center",padding:40}}><div style={{width:24,height:24,border:`2px solid ${C.border}`,borderTop:`2px solid ${C.blue}`,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/><style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style></div>; }
 function ErrMsg({message,onRetry}) { return <div style={{padding:"12px 16px",background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.2)",borderRadius:8,display:"flex",gap:12,alignItems:"center",marginBottom:16}}><span style={{color:C.red}}>✗</span><span style={{fontSize:13,color:C.red,flex:1}}>{message}</span>{onRetry&&<button onClick={onRetry} style={{background:"none",border:"1px solid rgba(239,68,68,0.3)",color:C.red,borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:12}}>Retry</button>}</div>; }
 
-const getTT = () => ({contentStyle:{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,color:C.text}});
+function getTT() { return {contentStyle:{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,color:C.text}}; }
 
 // ── Date range control ────────────────────────────────────────────────────────
 function DateRangeControl({dateFrom,dateTo,onChange}) {
@@ -363,6 +358,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   const [filterCategory,setFilterCategory] = useState(null);
   const [filterIncType,setFilterIncType]   = useState(null);
   const [reportExpanded,setReportExpanded] = useState(null);
+  const [supView,setSupView]           = useState("dashboard");
 
   useEffect(()=>{
     if (!supplierFacing) apiFetch("/api/suppliers").then(d=>{ setSuppliers(d.suppliers||[]); if(!selectedID&&d.suppliers?.length) setSelectedID(d.suppliers[0].supplierID); }).catch(()=>{});
@@ -409,6 +405,17 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
 
   return (
     <div>
+      <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
+        {[{id:"dashboard",label:"Dashboard"},{id:"customer_voice",label:"🗣 Customer Voice"}].map(t=>(
+          <button key={t.id} onClick={()=>setSupView(t.id)}
+            style={{background:"none",border:"none",borderBottom:supView===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:supView===t.id?C.blue:C.muted,padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:supView===t.id?600:400}}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {supView==="customer_voice" && <CustomerVoice supplierID={selectedID||initialSupplier}/>}
+      {supView==="dashboard" && (
+      <div>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20,gap:16,flexWrap:"wrap"}}>
         <div>
           <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>
@@ -632,6 +639,8 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
         </>
       )}
     </div>
+      )}
+    </div>
   );
 }
 
@@ -748,14 +757,8 @@ function NewReport({onCreated}) {
           const shouldStop = (s.status && TERMINAL.includes(s.status)) || elapsed > 180000;
           if (shouldStop) {
             clearInterval(pollRef.current); pollRef.current = null; setRunning(false);
-            // Force status to pending_review if timed out and still running
-            if (elapsed > 180000 && (!s.status || !TERMINAL.includes(s.status))) {
-              setStatus("pending_review");
-            }
-            try {
-              const full = await apiFetch(`/api/runs/${newRunID}`);
-              setRunData(full);
-            } catch(e) { /* run data may not be available yet */ }
+            if (elapsed > 180000 && (!s.status || !TERMINAL.includes(s.status))) setStatus("pending_review");
+            try { const full = await apiFetch(`/api/runs/${newRunID}`); setRunData(full); } catch(e) {}
             setRefreshKey(k=>k+1);
           }
         } catch(e){ clearInterval(pollRef.current); pollRef.current = null; setRunning(false); }
@@ -769,7 +772,7 @@ function NewReport({onCreated}) {
     try {
       await apiFetch("/api/decisions",{method:"POST",body:JSON.stringify({runID,decision:"approved",reviewer:"account_manager",reason:share?"Approved for supplier sharing":"Approved internal only",shareWithSupplier:share})});
       if(onCreated) onCreated();
-      alert(share?"Report approved and shared with supplier. It will appear in their view.":"Report approved for internal use only.");
+      alert(share?"Report approved and shared with supplier.":"Report saved.");
     } catch(e){ setError(e.message); } finally { setSharing(false); }
   };
 
@@ -812,24 +815,23 @@ function NewReport({onCreated}) {
         )}
       </Card>
       {isReady&&status&&IN_QUEUE.includes(status)&&!runData&&(
-        <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
-          <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>⚠ Report sent to review queue</div>
-          <div style={{fontSize:12,color:C.muted}}>Confidence was below auto-approve threshold. An admin needs to review it in the Queue tab. You can find it in Recent Reports below once it loads.</div>
+        <div style={{padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10,marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>Report sent to review queue</div>
+          <div style={{fontSize:12,color:C.muted}}>Confidence below auto-approve threshold. Find it in Recent Reports below.</div>
         </div>
       )}
       {isReady&&runData&&(
         <div>
-          {IN_QUEUE.includes(status) ? (
-            <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
-              <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>⚠ Low confidence — pending admin review</div>
-              <div style={{fontSize:12,color:C.muted}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · Below auto-approve threshold. You can read the report and save it internally, but sharing with a supplier requires admin approval in the Queue tab.</div>
-            </div>
-          ) : (
-            <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:10}}>
-              <div style={{fontSize:14,fontWeight:600,color:C.green,marginBottom:4}}>Report ready — review below</div>
-              <div style={{fontSize:12,color:C.green}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · {runData.policyDecision?.replace(/_/g," ")}</div>
-            </div>
-          )}
+          {IN_QUEUE.includes(status)
+            ? <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
+                <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>⚠ Low confidence — pending admin review</div>
+                <div style={{fontSize:12,color:C.muted}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · You can read the report below. Sharing with supplier requires admin approval in the Queue tab.</div>
+              </div>
+            : <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:10}}>
+                <div style={{fontSize:14,fontWeight:600,color:C.green,marginBottom:4}}>Report ready — review below</div>
+                <div style={{fontSize:12,color:C.green}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · {runData.policyDecision?.replace(/_/g," ")}</div>
+              </div>
+          }
           <Card style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>Report Narrative</div>
             <div style={{fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif",maxHeight:400,overflowY:"auto"}}>
@@ -846,16 +848,12 @@ function NewReport({onCreated}) {
                 <div style={{fontSize:12,color:C.muted}}>Save to control plane. Not visible to supplier.</div>
               </button>
               {isSupplier&&(
-                <div style={{padding:"16px",border:`1px solid ${IN_QUEUE.includes(status)?C.border:C.border}`,borderRadius:8,background:IN_QUEUE.includes(status)?"rgba(0,0,0,0.02)":C.surface,opacity:IN_QUEUE.includes(status)?0.6:1,position:"relative",cursor:IN_QUEUE.includes(status)?"not-allowed":"pointer"}}
+                <div style={{padding:"16px",border:`1px solid ${IN_QUEUE.includes(status)?C.border:C.border}`,borderRadius:8,background:C.surface,opacity:IN_QUEUE.includes(status)?0.5:1,cursor:IN_QUEUE.includes(status)?"not-allowed":"pointer",textAlign:"left",transition:"all 0.15s"}}
                   onClick={!IN_QUEUE.includes(status)?()=>handleShare(true):undefined}
                   onMouseEnter={e=>{ if(!IN_QUEUE.includes(status)) e.currentTarget.style.borderColor=C.teal; }}
                   onMouseLeave={e=>{ e.currentTarget.style.borderColor=C.border; }}>
                   <div style={{fontSize:14,fontWeight:600,color:IN_QUEUE.includes(status)?C.muted:C.teal,marginBottom:4}}>🔗 Share with supplier</div>
-                  <div style={{fontSize:12,color:C.muted}}>
-                    {IN_QUEUE.includes(status)
-                      ? "Requires admin approval in Queue first."
-                      : "Appears in supplier's view alongside their standard dashboard."}
-                  </div>
+                  <div style={{fontSize:12,color:C.muted}}>{IN_QUEUE.includes(status)?"Requires admin approval in Queue first.":"Appears in supplier's view alongside their standard dashboard."}</div>
                 </div>
               )}
             </div>
@@ -886,21 +884,8 @@ function RecentReports({refreshKey}) {
   if (loading) return <Spinner/>;
   if (!reports.length) return null;
 
-  const statusColor = (s) => {
-    if (["approved","edited_and_approved","auto_approved"].includes(s)) return C.green;
-    if (s === "rejected") return C.red;
-    if (["pending_review","pending","pending_publish","escalated"].includes(s)) return C.amber;
-    return C.muted;
-  };
-  const statusLabel = (s) => {
-    if (s === "approved" || s === "edited_and_approved") return "Approved";
-    if (s === "auto_approved") return "Auto-approved";
-    if (s === "pending_review" || s === "pending" || s === "pending_publish") return "Awaiting review";
-    if (s === "escalated") return "Awaiting review";
-    if (s === "rejected") return "Rejected";
-    if (s === "running") return "Processing";
-    return s || "Processing";
-  };
+  const statusColor = s => ["approved","edited_and_approved","auto_approved"].includes(s)?C.green:s==="rejected"?C.red:["pending_review","pending","pending_publish","escalated"].includes(s)?C.amber:C.muted;
+  const statusLabel = s => s==="approved"||s==="edited_and_approved"?"Approved":s==="auto_approved"?"Auto-approved":["pending_review","pending","pending_publish","escalated"].includes(s)?"Awaiting review":s==="rejected"?"Rejected":s==="running"?"Processing":s||"Processing";
 
   return (
     <div style={{marginTop:32}}>
@@ -910,7 +895,7 @@ function RecentReports({refreshKey}) {
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
         {reports.map((run,i)=>{
-          const ds = run.displayStatus || run.decision || run.status;
+          const ds = run.displayStatus||run.decision||run.status;
           return (
             <div key={run.runID} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden"}}>
               <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
@@ -918,14 +903,12 @@ function RecentReports({refreshKey}) {
                   <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4,flexWrap:"wrap"}}>
                     <span style={{fontSize:13,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>
                     {run.supplierID&&<Badge>{run.supplierID}</Badge>}
-                    <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${statusColor(ds)}18`,color:statusColor(ds),fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>
-                      {statusLabel(ds)}
-                    </span>
+                    <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${statusColor(ds)}18`,color:statusColor(ds),fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>{statusLabel(ds)}</span>
                   </div>
                   <div style={{fontSize:11,color:C.muted}}>
-                    {run.startedAt ? new Date(run.startedAt).toLocaleString("en-GB") : ""}
-                    {run.confidence ? ` · Confidence: ${((run.confidence||0)*100).toFixed(0)}%` : ""}
-                    {run.approvedBy ? ` · ${run.approvedBy}` : run.reviewer ? ` · ${run.reviewer}` : ""}
+                    {run.startedAt?new Date(run.startedAt).toLocaleString("en-GB"):""}
+                    {run.confidence?` · Confidence: ${((run.confidence||0)*100).toFixed(0)}%`:""}
+                    {run.approvedBy?` · ${run.approvedBy}`:run.reviewer?` · ${run.reviewer}`:""}
                   </div>
                 </div>
                 <button onClick={()=>setExpanded(expanded===i?null:i)}
@@ -935,29 +918,14 @@ function RecentReports({refreshKey}) {
               </div>
               {expanded===i&&(
                 <div style={{borderTop:`1px solid ${C.border}`,padding:"16px 18px"}}>
-                  {run.reason && (
-                    <div style={{padding:"10px 14px",background:"rgba(239,68,68,0.06)",border:"1px solid rgba(239,68,68,0.15)",borderRadius:7,marginBottom:14,fontSize:12,color:C.red}}>
-                      Rejection reason: {run.reason}
-                    </div>
-                  )}
-                  {run.approvedBy && (
-                    <div style={{fontSize:11,color:C.muted,marginBottom:12}}>
-                      Approved by {run.approvedBy}{run.approvedAt ? ` · ${new Date(run.approvedAt).toLocaleDateString("en-GB")}` : ""}
-                    </div>
-                  )}
-                  {run.reportNarrative ? (
-                    <div style={{fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif",maxHeight:500,overflowY:"auto"}}>
-                      {run.reportNarrative}
-                    </div>
-                  ) : (
-                    <div style={{padding:"12px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:7,fontSize:13,color:C.muted,fontStyle:"italic"}}>
-                      {ds === "pending_review" || ds === "pending"
-                        ? "Awaiting admin review in Queue. Narrative will appear here once approved."
-                        : ds === "rejected"
-                        ? "This report was rejected and not published."
-                        : "Report is still processing."}
-                    </div>
-                  )}
+                  {run.reason&&<div style={{padding:"10px 14px",background:"rgba(239,68,68,0.06)",border:"1px solid rgba(239,68,68,0.15)",borderRadius:7,marginBottom:14,fontSize:12,color:C.red}}>Rejection reason: {run.reason}</div>}
+                  {run.approvedBy&&<div style={{fontSize:11,color:C.muted,marginBottom:12}}>Approved by {run.approvedBy}{run.approvedAt?` · ${new Date(run.approvedAt).toLocaleDateString("en-GB")}`:""}</div>}
+                  {run.reportNarrative
+                    ? <div style={{fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif",maxHeight:500,overflowY:"auto"}}>{run.reportNarrative}</div>
+                    : <div style={{padding:"12px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:7,fontSize:13,color:C.muted,fontStyle:"italic"}}>
+                        {["pending_review","pending","escalated"].includes(ds)?"Awaiting admin review in Queue. Narrative will appear here once approved.":ds==="rejected"?"This report was rejected and not published.":"Report is still processing."}
+                      </div>
+                  }
                 </div>
               )}
             </div>
@@ -1198,6 +1166,182 @@ function AskQuestion() {
   );
 }
 
+
+// ── Customer Voice ────────────────────────────────────────────────────────────
+function CustomerVoice({supplierID}) {
+  const [data,setData]                   = useState(null);
+  const [loading,setLoading]             = useState(true);
+  const [error,setError]                 = useState(null);
+  const [selectedMonth,setSelectedMonth] = useState(null);
+  const [expandedSKU,setExpandedSKU]     = useState(null);
+  const [activeTab,setActiveTab]         = useState({});
+
+  const load = useCallback((month=null)=>{
+    if (!supplierID) return;
+    setLoading(true); setError(null);
+    const q = month ? `?month=${month}` : "";
+    apiFetch(`/api/customer-voice/${supplierID}${q}`)
+      .then(d=>{ setData(d); setSelectedMonth(d.selectedMonth); setLoading(false); })
+      .catch(e=>{ setError(e.message); setLoading(false); });
+  },[supplierID]);
+
+  useEffect(()=>{ load(); },[load]);
+
+  const effortColor = e => e==="low"?C.green:e==="medium"?C.amber:C.red;
+  const sevColor    = s => s==="high"?C.red:s==="medium"?C.amber:C.blue;
+  const catIcon     = c => ({product_quality:"🔧",packaging:"📦",fulfilment:"🏭",listing_accuracy:"📋"}[c]||"⚠");
+  const catLabel    = c => ({product_quality:"Product Quality",packaging:"Packaging",fulfilment:"Fulfilment",listing_accuracy:"Listing Accuracy"}[c]||c);
+  const rcConfColor = c => c==="high"?C.red:c==="medium"?C.amber:C.green;
+
+  if (loading) return <Spinner/>;
+  if (error)   return <ErrMsg message={error}/>;
+  if (!data?.skus?.length) return (
+    <div style={{textAlign:"center",padding:60,color:C.muted,fontSize:14}}>
+      No Customer Voice data available yet. Data is generated monthly by the Comment Intelligence agent.
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:12}}>
+        <div>
+          <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Customer Voice</h2>
+          <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>
+            {data.skus.length} flagged SKU{data.skus.length!==1?"s":""} · AI analysis of customer incident &amp; return comments
+          </p>
+        </div>
+        <select value={selectedMonth||""} onChange={e=>{ setSelectedMonth(e.target.value); load(e.target.value); setExpandedSKU(null); }}
+          style={{background:C.surface,border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"6px 12px",fontSize:13}}>
+          {(data.months||[]).map(m=>(
+            <option key={m} value={m}>{new Date(m+"T00:00:00").toLocaleDateString("en-GB",{month:"long",year:"numeric"})}</option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        {data.skus.map((sku,i)=>{
+          const isOpen = expandedSKU === i;
+          const tab    = activeTab[i] || "rootcauses";
+          const incDev = ((+sku.skuIncidentRate) - (+sku.catIncidentRate)).toFixed(1);
+          const retDev = ((+sku.skuReturnRate)   - (+sku.catReturnRate)).toFixed(1);
+
+          return (
+            <div key={sku.productSKU} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+              <div onClick={()=>setExpandedSKU(isOpen?null:i)} style={{padding:"16px 20px",cursor:"pointer"}}>
+                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8,flexWrap:"wrap"}}>
+                  <span style={{fontSize:15,fontWeight:700,color:C.blue,fontFamily:"monospace"}}>{sku.productSKU}</span>
+                  <Badge>{sku.productCategory}</Badge>
+                  <span style={{fontSize:11,color:C.muted}}>{sku.totalOrders} orders · {sku.incidentCommentCount} incident comments · {sku.returnCommentCount} return comments</span>
+                  <span style={{marginLeft:"auto",color:C.muted,fontSize:14}}>{isOpen?"▲":"▼"}</span>
+                </div>
+                <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:11,color:C.muted}}>Incident rate</span>
+                    <span style={{fontSize:13,fontWeight:700,color:C.red,fontFamily:"monospace"}}>{(+sku.skuIncidentRate).toFixed(1)}%</span>
+                    <span style={{fontSize:11,color:C.muted}}>vs {(+sku.catIncidentRate).toFixed(1)}% avg</span>
+                    <span style={{fontSize:11,padding:"1px 6px",borderRadius:4,background:"rgba(239,68,68,0.12)",color:C.red,fontWeight:600}}>+{incDev}pp</span>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:11,color:C.muted}}>Return rate</span>
+                    <span style={{fontSize:13,fontWeight:700,color:C.amber,fontFamily:"monospace"}}>{(+sku.skuReturnRate).toFixed(1)}%</span>
+                    <span style={{fontSize:11,color:C.muted}}>vs {(+sku.catReturnRate).toFixed(1)}% avg</span>
+                    <span style={{fontSize:11,padding:"1px 6px",borderRadius:4,background:+retDev>0?"rgba(245,158,11,0.12)":"rgba(34,197,94,0.12)",color:+retDev>0?C.amber:C.green,fontWeight:600}}>{+retDev>0?"+":""}{retDev}pp</span>
+                  </div>
+                  <span style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>AI confidence: <span style={{color:rcConfColor(sku.confidence>=0.85?"high":sku.confidence>=0.7?"medium":"low"),fontWeight:700}}>{((sku.confidence||0)*100).toFixed(0)}%</span></span>
+                </div>
+              </div>
+
+              {isOpen&&(
+                <div style={{borderTop:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",gap:0,borderBottom:`1px solid ${C.border}`,padding:"0 20px"}}>
+                    {[
+                      {id:"rootcauses",  label:`Root Causes (${(sku.rootCauses||[]).length})`},
+                      {id:"incidents",   label:`Incident Themes (${(sku.incidentThemes||[]).length})`},
+                      {id:"returns",     label:`Return Themes (${(sku.returnThemes||[]).length})`},
+                      {id:"improvements",label:`Improvements (${(sku.improvements||[]).length})`},
+                    ].map(t=>(
+                      <button key={t.id} onClick={()=>setActiveTab(p=>({...p,[i]:t.id}))}
+                        style={{background:"none",border:"none",borderBottom:tab===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:tab===t.id?C.blue:C.muted,padding:"10px 14px",cursor:"pointer",fontSize:12,fontWeight:tab===t.id?600:400,whiteSpace:"nowrap"}}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{padding:20}}>
+                    {tab==="rootcauses"&&(
+                      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                        {(sku.rootCauses||[]).map((rc,j)=>(
+                          <div key={j} style={{padding:"14px 16px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,display:"flex",gap:14}}>
+                            <div style={{flexShrink:0,width:36,height:36,borderRadius:8,background:`${rcConfColor(rc.confidence)}18`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{catIcon(rc.category)}</div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:"flex",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+                                <span style={{fontSize:10,padding:"2px 7px",borderRadius:4,background:`${rcConfColor(rc.confidence)}18`,color:rcConfColor(rc.confidence),fontWeight:700,textTransform:"uppercase"}}>{rc.confidence} confidence</span>
+                                <span style={{fontSize:10,padding:"2px 7px",borderRadius:4,background:"rgba(96,165,250,0.12)",color:C.blue,fontWeight:700,textTransform:"uppercase"}}>{catLabel(rc.category)}</span>
+                              </div>
+                              <p style={{fontSize:13,fontWeight:600,color:C.text,margin:"0 0 6px"}}>{rc.cause}</p>
+                              <p style={{fontSize:12,color:C.muted,margin:0,lineHeight:1.6,fontStyle:"italic"}}>"{rc.supporting_evidence}"</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {tab==="incidents"&&(
+                      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                        {(sku.incidentThemes||[]).map((t,j)=>(
+                          <div key={j} style={{padding:"12px 16px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8}}>
+                            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
+                              <span style={{fontSize:12,fontWeight:600,color:C.text,flex:1}}>{t.theme}</span>
+                              <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${sevColor(t.severity)}18`,color:sevColor(t.severity),fontWeight:700,textTransform:"uppercase"}}>{t.severity}</span>
+                              <span style={{fontSize:11,color:C.muted,fontFamily:"monospace"}}>{t.frequency}× reported</span>
+                            </div>
+                            <p style={{fontSize:12,color:C.muted,margin:0,lineHeight:1.6,fontStyle:"italic"}}>"{t.evidence}"</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {tab==="returns"&&(
+                      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                        {(sku.returnThemes||[]).length
+                          ? (sku.returnThemes||[]).map((t,j)=>(
+                            <div key={j} style={{padding:"12px 16px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8}}>
+                              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
+                                <span style={{fontSize:12,fontWeight:600,color:C.text,flex:1}}>{t.theme}</span>
+                                <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${sevColor(t.severity)}18`,color:sevColor(t.severity),fontWeight:700,textTransform:"uppercase"}}>{t.severity}</span>
+                                <span style={{fontSize:11,color:C.muted,fontFamily:"monospace"}}>{t.frequency}× reported</span>
+                              </div>
+                              <p style={{fontSize:12,color:C.muted,margin:0,lineHeight:1.6,fontStyle:"italic"}}>"{t.evidence}"</p>
+                            </div>
+                          ))
+                          : <div style={{fontSize:13,color:C.muted,fontStyle:"italic"}}>No return themes identified for this SKU.</div>
+                        }
+                      </div>
+                    )}
+                    {tab==="improvements"&&(
+                      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                        {(sku.improvements||[]).map((imp,j)=>(
+                          <div key={j} style={{padding:"14px 16px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,display:"flex",gap:12}}>
+                            <div style={{flexShrink:0,width:28,height:28,borderRadius:"50%",background:"rgba(96,165,250,0.15)",border:`1px solid ${C.blue}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:C.blue}}>{imp.priority}</div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <p style={{fontSize:13,fontWeight:600,color:C.text,margin:"0 0 8px",lineHeight:1.5}}>{imp.action}</p>
+                              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                                <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${effortColor(imp.effort)}18`,color:effortColor(imp.effort),fontWeight:700,textTransform:"uppercase"}}>{imp.effort} effort</span>
+                              </div>
+                              <p style={{fontSize:12,color:C.muted,margin:0,lineHeight:1.5}}><span style={{color:C.green,fontWeight:600}}>Expected impact: </span>{imp.expected_impact}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Run Queue ─────────────────────────────────────────────────────────────────
 function RunQueue({onSelect}) {
   const [runs,setRuns]       = useState([]);
@@ -1291,7 +1435,20 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
             {tabs.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",borderBottom:tab===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:tab===t.id?C.blue:C.muted,padding:"10px 16px",cursor:"pointer",fontSize:13,fontWeight:tab===t.id?600:400}}>{t.label}</button>))}
           </div>
           <div style={{background:C.surface,border:`1px solid ${C.border}`,borderTop:"none",borderRadius:"0 0 10px 10px",padding:20,overflowY:"auto",maxHeight:560}}>
-            {tab==="report"&&(decision==="edited_and_approved"?<textarea value={editedNarrative} onChange={e=>setEditedNarrative(e.target.value)} style={{width:"100%",minHeight:480,background:C.surface,border:`1px solid rgba(96,165,250,0.3)`,borderRadius:8,padding:16,color:C.text,fontSize:13,lineHeight:1.7,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box"}}/>:<div style={{fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif"}}>{run?.reportNarrative||"No narrative."}</div>)}
+            {tab==="report"&&(
+              <div>
+                {run?.goal && (
+                  <div style={{marginBottom:16,padding:"10px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:7}}>
+                    <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>Report Prompt</div>
+                    <div style={{fontSize:13,color:C.text,lineHeight:1.5}}>{run.goal}</div>
+                  </div>
+                )}
+                {decision==="edited_and_approved"
+                  ?<textarea value={editedNarrative} onChange={e=>setEditedNarrative(e.target.value)} style={{width:"100%",minHeight:480,background:C.surface,border:`1px solid rgba(96,165,250,0.3)`,borderRadius:8,padding:16,color:C.text,fontSize:13,lineHeight:1.7,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box"}}/>
+                  :<div style={{fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",fontFamily:"'Georgia',serif"}}>{run?.reportNarrative||"No narrative."}</div>
+                }
+              </div>
+            )}
             {tab==="validation"&&(
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
@@ -1345,7 +1502,7 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
               <div style={{fontSize:11,color:C.muted,marginTop:2}}>{opt.desc}</div>
             </div>
           ))}
-          {!isDemo && run?.supplierID&&decision&&decision!=="rejected"&&(
+          {run?.supplierID&&decision&&decision!=="rejected"&&(
             <div style={{padding:"12px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8}}>
               <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <input type="checkbox" checked={shareWithSupplier} onChange={e=>setShareWithSupplier(e.target.checked)} style={{width:16,height:16,accentColor:C.teal}} />
@@ -1465,7 +1622,6 @@ export default function App() {
   const [theme,setTheme]           = useState("dark");
   const [,forceUpdate]             = useState(0);
 
-  // All hooks before any conditional returns
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -1489,23 +1645,19 @@ export default function App() {
   }, [decisions, view, userRole]);
 
   const handleSignOut = async () => { await signOut(auth); };
-
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
     applyTheme(next);
     setTheme(next);
     forceUpdate(n => n + 1);
   };
-
   const isDemo = userRole === "demo";
 
   if (authUser === undefined) return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><Spinner/></div>
   );
-
   if (!authUser) return <LoginPage/>;
 
-  // Supplier portal
   if (userRole === "supplier" && supplierID) {
     return (
       <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
@@ -1524,7 +1676,6 @@ export default function App() {
     );
   }
 
-  // Admin / Business / Demo control plane
   const allNav = [
     {id:"queue",         label:"Queue",         badge:queueCount, adminOnly:true,  demoOk:true},
     {id:"dashboards",    label:"Dashboards",    adminOnly:false,                   demoOk:true},
@@ -1559,7 +1710,6 @@ export default function App() {
           <button onClick={handleSignOut} style={{background:"none",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>Sign out</button>
         </div>
       </div>
-
       <div style={{padding:"28px",maxWidth:1300,margin:"0 auto"}}>
         {view==="queue"&&!selected&&<RunQueue onSelect={run=>{ setSelected(run); setView("audit"); }}/>}
         {view==="audit"&&selected&&<AuditView runSummary={selected} isDemo={isDemo} onDecision={dec=>{ setDecisions(p=>({...p,[dec.runID]:dec})); }} onBack={()=>{ setSelected(null); setView("queue"); }}/>}

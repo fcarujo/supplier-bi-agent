@@ -106,47 +106,47 @@ def generate_business_report(
     client:      Anthropic,
     analysis:    dict,
     report_type: str,
+    goal:        str = "",
 ) -> str:
     """
     LLM call 4a — generate business overview narrative.
     For internal leadership. Portfolio-level, all suppliers.
     """
-    system_prompt = """You are generating a supplier performance business overview report
-for internal leadership. Write in clear, professional business language.
+    goal_line = f"The user specifically asked for: {goal}\n" if goal else ""
 
-Structure the report exactly as follows — use these markdown headers:
+    system_prompt = f"""You are generating a supplier performance report for internal leadership.
+Write in clear, professional business language.
 
-## Executive Summary
-2-3 sentences. Overall portfolio health, most important finding, top priority action.
+The report type is: {report_type}
+{goal_line}
+STRUCTURE RULES:
+- For SCHEDULED reports (weekly/monthly overview): use fixed sections:
+  ## Executive Summary, ## Portfolio Performance, ## Supplier Rankings,
+  ## Category Analysis, ## Fulfilment Channel Signals, ## Priority Actions, ## Anomalies & Watch Items
+- For AD-HOC reports: structure the report around what was actually asked.
+  Only include sections relevant to the goal. Do not pad with empty sections.
+  If asked for sales figures and a period comparison, structure around that comparison.
+  If asked about a single supplier, focus on that supplier.
+  Always include ## Key Findings and ## Recommendations at minimum.
 
-## Portfolio Performance
-Key metrics table and narrative. Incident rate, return rate, resolution cost.
-Compare to any available benchmarks. Note trends.
-
-## Supplier Rankings
-Rank suppliers by incident rate. Highlight outliers — both high performers and problems.
-Include specific numbers. Name the suppliers.
-
-## Category Analysis
-Which categories have structural issues. Incident rates per category vs portfolio average.
-Note which categories are supplier-driven vs category-driven.
-
-## Fulfilment Channel Signals
-Any patterns by fulfilment channel worth noting.
-
-## Priority Actions
-Numbered list of recommended actions. Most impactful first.
-Each action must include: what to do, which supplier/category, expected impact.
-Be specific — include supplier names, category names, and numbers.
-
-## Anomalies & Watch Items
-Any unusual patterns that need monitoring.
-
-RULES:
+CONTENT RULES:
 - Every claim must be backed by a number from the analysis
 - Name suppliers, categories, and SKUs explicitly
 - Be direct — this is a business report, not an academic paper
-- No hedging language unless confidence is genuinely low"""
+- No hedging language unless confidence is genuinely low
+- Do NOT include sections about topics that were not asked about and have no data
+- If a section would be empty or irrelevant to the goal, omit it entirely
+
+DATA INTEGRITY RULES — CRITICAL:
+- If comparing two time periods and one period has significantly fewer orders (less than 50%
+  of the other period's order count), explicitly flag this as a data limitation
+- If the earliest data point is close to the start of a comparison period, flag that the
+  comparison period may be incomplete — state what dates ARE covered
+- If any metric is zero when it logically should not be (e.g. resolution cost for a supplier
+  with known incidents), flag it as a data gap, not a finding
+- Never present partial-period data as a full-period figure without stating it is partial
+- If a period comparison was requested but data only covers part of one period, state clearly
+  what IS available and what IS NOT before drawing any conclusions"""
 
     user_prompt = f"""Generate a supplier performance business overview report.
 Report type: {report_type}
@@ -325,7 +325,18 @@ RULES:
 - Name SKUs explicitly — never say "some SKUs" if you have the data
 - The improvement plan must be actionable — specific enough for the supplier to act on
 - Tone: direct, professional, constructive — not punitive
-- If comment intelligence is provided, use it extensively in the Customer Voice section"""
+- If comment intelligence is provided, use it extensively in the Customer Voice section
+
+DATA INTEGRITY RULES — CRITICAL:
+- If comparing two time periods and one period has significantly fewer orders (less than 50%
+  of the other period's order count), explicitly flag this as a data limitation
+- If the earliest data point is close to the start of a comparison period, flag that the
+  comparison period may be incomplete — state what dates ARE covered
+- If any metric is zero when it logically should not be (e.g. resolution cost for a supplier
+  with known incidents), flag it as a data gap, not a finding
+- Never present partial-period data as a full-period figure without stating it is partial
+- If a period comparison was requested but data only covers part of one period, state clearly
+  what IS available and what IS NOT before drawing any conclusions"""
 
     user_prompt = f"""Generate a supplier account performance report for {supplier_name} ({supplier_id}).
 Report type: {report_type}
@@ -439,6 +450,7 @@ def generate_node(state: dict) -> dict:
     audience    = state["audience"]
     supplier_id = state.get("supplier_id")
     report_type = state["report_type"]
+    goal        = state.get("goal", "")
     run_id      = state.get("run_id")
     errors      = list(state.get("errors") or [])
 
@@ -463,6 +475,7 @@ def generate_node(state: dict) -> dict:
             client      = client,
             analysis    = analysis,
             report_type = report_type,
+            goal        = goal,
         )
 
     print(f"  [generate] Narrative generated — {len(narrative):,} characters")

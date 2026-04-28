@@ -137,7 +137,7 @@ python agent/insight_agent.py [--dry-run]
 
 **Scheduled reports** use pre-defined SQL templates stored in `metadata.yaml`. Zero LLM involvement in query generation — consistent, version-controlled, deterministic results on every run.
 
-**Ad-hoc reports** use LLM-generated SQL at runtime since the goal is open-ended. Always requires human review before publishing.
+**Ad-hoc reports** use LLM-generated SQL at runtime since the goal is open-ended. The LLM receives enriched column schemas from `metadata.yaml` — each column has its type, description, and usage notes — to prevent invented column names. If a generated query fails in BigQuery, the exact error is fed back to the LLM for automatic correction (up to 2 attempts). Always requires human review before publishing.
 
 ---
 
@@ -155,19 +155,19 @@ Three independent layers — an attacker must bypass all three simultaneously.
 
 ## Control Plane
 
-**Queue** — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Option to share approved supplier reports with the supplier.
+**Queue** — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs — Report tab shows the original prompt that generated the report. Decisions: Approve / Edit & Approve / Reject. Rejection with reason is stored against the run for the planned feedback loop (Phase 8).
 
 **Dashboards**
 - *Business Overview* — Weekly insights banner (digest + severity-rated alerts + 4-week history), 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown, resolution mix. Cross-filtering on all charts.
 - *Supplier Account* — Metrics + portfolio benchmark scorecards, category charts, SKU incident & return tables, return reasons, incident type breakdown, resolution mix. Cross-filtering on category and incident type.
 
-**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion → Internal Only or Share with Supplier. Recent Reports section shows all past ad-hoc runs with narrative, accessible regardless of session.
+**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion. Low-confidence reports show amber warning with narrative still visible — internal save available immediately, supplier sharing requires admin queue approval. Recent Reports section shows all past ad-hoc runs with status and narrative.
 
 **Ask** — Conversational natural language → BigQuery SQL → answer table. Multi-turn session with context memory. SQL shown transparently per answer. Auto-corrects SQL errors up to 3 times.
 
 **Observability** — Full run history with confidence scores, decisions, and reviewer names.
 
-**Supplier Portal** — Authenticated supplier-facing view at agentic-intel.de. Scoped to their `supplierID` — they see only their own data, charts, and any reports shared with them by account managers. No internal metrics, no governance UI.
+**Supplier Portal** — Authenticated supplier-facing view at agentic-intel.de. Scoped to their `supplierID` — they see only their own data, charts, and any reports shared with them by account managers. Includes a **Customer Voice** tab with structured, interactive view of `sku_comment_intelligence` data — flagged SKUs, root causes, incident themes, return themes, and prioritised improvement actions sourced directly from customer comments. No internal metrics, no governance UI.
 
 ---
 
@@ -232,7 +232,7 @@ supplier-bi-agent/
 │   │   ├── review.py             # Policy engine — auto-approve / queue / escalate
 │   │   └── publish.py            # GCS + BigQuery publish
 │   └── config/
-│       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns
+│       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns, enriched column schemas with types and descriptions
 │       └── policies.yaml         # Auto-approve rules per report type
 ├── control_plane/
 │   ├── main.py                   # FastAPI — all endpoints, JWT middleware, session store, insights
@@ -263,4 +263,5 @@ supplier-bi-agent/
 | 4 — Semantic control plane | ✅ Complete | Validation, policy engine, React audit UI |
 | 5 — Dashboards & deployment | ✅ Complete | React dashboards, ad-hoc, NL BI, Cloud Run |
 | 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Conversational Query, Insight Agent |
-| 7 — Supplier portal | 🔄 In progress | Firebase Auth · agentic-intel.de · JWT middleware · multi-role access · supplier portal |
+| 7 — Supplier portal | 🔄 In progress | Firebase Auth · agentic-intel.de · JWT middleware · multi-role access · supplier portal · Customer Voice view · dark/light theme · demo role |
+| 8 — Agent self-correction | ⬜ Planned | Rejection feedback loop · SQL auto-correction · human corrections as agent input · confidence improvement |

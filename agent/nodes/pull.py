@@ -103,15 +103,20 @@ def validate_sql(
 
 def inject_supplier_filter(sql: str, supplier_id: str) -> str:
     """
-    Safety net — inject supplier filter if template forgot to include it.
-    Should not be needed for template SQL but catches edge cases.
+    Safety net — inject supplier filter and correct any truncated supplier IDs.
     """
+    import re as _re
+    # Correct any malformed supplierID value in the SQL (e.g. SU004 -> SUP004)
+    sql = _re.sub(
+        r"supplierID\s*=\s*'[^']*'",
+        f"supplierID = '{supplier_id}'",
+        sql
+    )
     if f"'{supplier_id}'" in sql:
-        return sql  # already present
+        return sql
 
     filter_clause = f"supplierID = '{supplier_id}'"
     sql_upper     = sql.upper()
-
     if "WHERE" in sql_upper:
         where_pos = sql_upper.index("WHERE")
         return sql[:where_pos + 5] + f" {filter_clause} AND " + sql[where_pos + 6:]
@@ -125,21 +130,22 @@ def inject_supplier_filter(sql: str, supplier_id: str) -> str:
 # ── LLM SQL generator (ad-hoc only) ──────────────────────────────────────────
 
 def generate_sql_llm(
-    client:       Anthropic,
-    table_name:   str,
-    table_schema: dict,
-    goal:         str,
-    report_type:  str,
-    audience:     str,
-    supplier_id:  str,
-    project:      str,
-    dataset:      str,
-    date_from:    str,
-    date_to:      str,
+    client:         Anthropic,
+    table_name:     str,
+    table_schema:   dict,
+    goal:           str,
+    report_type:    str,
+    audience:       str,
+    supplier_id:    str,
+    project:        str,
+    dataset:        str,
+    date_from:      str,
+    date_to:        str,
+    column_schemas: dict = None,
 ) -> str:
     """
-    LLM call — generate a simple flat SQL aggregation for ad-hoc reports only.
-    Constrained to prevent complex queries that cause BigQuery errors.
+    LLM call — generate SQL for ad-hoc reports using enriched column schema.
+    Column descriptions prevent invented column names and type errors.
     """
     allowed_cols    = table_schema["allowed_columns"]
     filters         = table_schema.get("filters", [])
@@ -147,47 +153,69 @@ def generate_sql_llm(
 
     date_context = ""
     if date_from and date_to:
-        date_context = f"Date range to apply: {date_from} to {date_to}"
+        date_context = f"Date range requested: {date_from} to {date_to}"
     elif filters:
         date_context = f"Default date filters: {'; '.join(filters)}"
 
     supplier_context = ""
     if supplier_scoped and supplier_id:
         supplier_context = (
-            f"\nREQUIRED: Include WHERE supplierID = '{supplier_id}' in the query."
+            f"\nREQUIRED: Always include WHERE supplierID = \'{supplier_id}\' "
+            f"in the query. Use this EXACT string — do not shorten or modify it."
         )
 
-    system_prompt = f"""You are the Pull node of a supplier BI agent writing SQL for an ad-hoc report.
-Write ONE simple flat BigQuery SQL aggregation query.
+    # Build enriched column descriptions from schema
+    col_lines = []
+    if column_schemas and table_name in column_schemas:
+        schema_cols = column_schemas[table_name].get("columns", {})
+        for col in allowed_cols:
+            if col in schema_cols:
+                info = schema_cols[col]
+                col_lines.append(f"  {col} ({info['type']}): {info['description']}")
+            else:
+                col_lines.append(f"  {col}")
+    else:
+        col_lines = [f"  {c}" for c in allowed_cols]
 
-STRICT RULES:
-- Use ONLY the allowed columns listed below — no others exist
-- NO SELECT * — name every column explicitly
-- NO CTEs (WITH clauses)
-- NO window functions (OVER, RANK, ROW_NUMBER, PARTITION BY)
-- NO UNION or UNION ALL
-- NO subqueries
-- ONE flat SELECT ... FROM ... WHERE ... GROUP BY ... ORDER BY
-- Maximum 12 columns in SELECT
-- Always use full table path: `{project}.{dataset}.{table_name}`
-- Return ONLY the SQL — no explanation, no markdown{supplier_context}
-- Never use SUM(bool_column) — BigQuery does not support it. Always use SUM(CASE WHEN bool_column THEN 1 ELSE 0 END)
-- hasIncident and hasReturn are BOOL columns — never SUM them directly
+    columns_context = "\n".join(col_lines)
 
-The Analyse node handles all cross-table logic. Your job is one clean flat aggregation.
+    system_prompt = (
+        "You are the Pull node of a supplier BI agent writing SQL for BigQuery.\n"
+        "Write ONE SQL aggregation query that answers the report goal.\n"
+        "\n"
+        "STRICT RULES:\n"
+        "- Use ONLY the exact column names from the schema below — do not invent names\n"
+        "- NO SELECT * — name every column explicitly\n"
+        "- NO window functions (OVER, RANK, ROW_NUMBER, PARTITION BY)\n"
+        "- NO UNION or UNION ALL\n"
+        "- NO subqueries in FROM clause\n"
+        "- Maximum 15 columns in SELECT\n"
+        f"- Always use full table path: `{project}.{dataset}.{table_name}`\n"
+        "- Return ONLY the SQL — no explanation, no markdown, no code fences\n"
+        + supplier_context + "\n"
+        "\n"
+        "PERIOD COMPARISONS — when comparing two time periods use conditional aggregation:\n"
+        "  SELECT\n"
+        "    SUM(CASE WHEN EXTRACT(YEAR FROM orderDate) = 2026 THEN grossRevenue ELSE 0 END) AS grossRevenue_2026,\n"
+        "    SUM(CASE WHEN EXTRACT(YEAR FROM orderDate) = 2025 THEN grossRevenue ELSE 0 END) AS grossRevenue_2025,\n"
+        "    SUM(CASE WHEN EXTRACT(YEAR FROM orderDate) = 2026 AND hasIncident THEN 1 ELSE 0 END) AS incidents_2026,\n"
+        "    COUNT(CASE WHEN EXTRACT(YEAR FROM orderDate) = 2026 THEN orderID END) AS orders_2026\n"
+        f"  FROM `{project}.{dataset}.{table_name}`\n"
+        "  WHERE orderDate >= '2025-01-01' AND orderDate <= CURRENT_DATE()\n"
+        "\n"
+        "DATE SCOPING: WHERE clause must cover ALL periods being compared.\n"
+        f"\nCOLUMN SCHEMA for `{project}.{dataset}.{table_name}`:\n"
+        + columns_context + "\n"
+        + ("\n" + date_context if date_context else "")
+    )
 
-Allowed columns:
-{', '.join(allowed_cols)}
-
-{date_context}"""
-
-    user_prompt = f"""Ad-hoc report goal: {goal}
-
-Table: {table_name}
-Audience: {audience}
-{"Supplier filter required: " + supplier_id if supplier_scoped and supplier_id else ""}
-
-Write a single flat GROUP BY aggregation. Return only the SQL."""
+    user_prompt = (
+        f"Report goal: {goal}\n"
+        f"Table: {table_name}\n"
+        f"Audience: {audience}\n"
+        + (f"Supplier: {supplier_id}\n" if supplier_scoped and supplier_id else "")
+        + "\nWrite the SQL query. Return only the SQL, nothing else."
+    )
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
@@ -197,8 +225,6 @@ Write a single flat GROUP BY aggregation. Return only the SQL."""
     )
 
     sql = response.content[0].text.strip()
-
-    # Strip markdown if present
     if sql.startswith("```"):
         sql = sql.split("```")[1]
         if sql.lower().startswith("sql"):
@@ -281,20 +307,44 @@ def pull_node(state: dict) -> dict:
             )
 
         else:  # sql_mode == "llm"
-            print(f"  [pull] Generating SQL via LLM for {table_name}...")
-            sql = generate_sql_llm(
-                client       = claude_client,
-                table_name   = table_name,
-                table_schema = table_schema,
-                goal         = goal,
-                report_type  = report_type,
-                audience     = audience,
-                supplier_id  = supplier_id,
-                project      = project,
-                dataset      = dataset,
-                date_from    = date_from,
-                date_to      = date_to,
-            )
+            # Suppliers table is reference data — never use LLM, always simple SELECT
+            if table_name == "suppliers":
+                allowed_cols_list = table_schema["allowed_columns"]
+                cols_str = ", ".join(allowed_cols_list)
+                if supplier_id:
+                    sql = f"SELECT {cols_str} FROM `{project}.{dataset}.suppliers` WHERE supplierID = '{supplier_id}'"
+                else:
+                    sql = f"SELECT {cols_str} FROM `{project}.{dataset}.suppliers` ORDER BY supplierID"
+                print(f"  [pull] Using fixed SQL for suppliers table (reference data)")
+            else:
+                print(f"  [pull] Generating SQL via LLM for {table_name}...")
+                sql = None
+                for _attempt in range(3):
+                    _sql = generate_sql_llm(
+                        client         = claude_client,
+                        table_name     = table_name,
+                        table_schema   = table_schema,
+                        goal           = goal,
+                        report_type    = report_type,
+                        audience       = audience,
+                        supplier_id    = supplier_id,
+                        project        = project,
+                        dataset        = dataset,
+                        date_from      = date_from,
+                        date_to        = date_to,
+                        column_schemas = config.get("column_schemas", {}),
+                    )
+                    _stripped = _sql.strip().upper()
+                    if _stripped.startswith("SELECT") or _stripped.startswith("WITH"):
+                        sql = _sql
+                        break
+                    print(f"  [pull] WARNING — non-SQL response on attempt {_attempt+1}, retrying...")
+                if sql is None:
+                    error_msg = f"LLM failed to produce valid SQL for {table_name} after 3 attempts"
+                    print(f"  [pull] ERROR — {error_msg}")
+                    errors.append(error_msg)
+                    pull_validation[table_name] = {"status": "error", "warnings": [error_msg]}
+                    continue
 
         # ── Safety net: inject supplier filter if scoped and missing ──────────
         if report_config.get("supplier_scoped") and supplier_id:
@@ -322,12 +372,72 @@ def pull_node(state: dict) -> dict:
 
         # ── Execute on BigQuery ───────────────────────────────────────────────
         print(f"  [pull] Executing on BigQuery...")
-        try:
-            limited_sql = f"SELECT * FROM ({sql}) LIMIT {max_raw_rows}"
-            rows        = list(bq_client.query(limited_sql).result())
+        rows = None
+        last_bq_error = None
 
-        except Exception as e:
-            error_msg = f"BigQuery query failed for {table_name}: {str(e)}"
+        for _correction in range(3):
+            try:
+                limited_sql = f"SELECT * FROM ({sql}) LIMIT {max_raw_rows}"
+                rows        = list(bq_client.query(limited_sql).result())
+                break
+
+            except Exception as e:
+                bq_error = str(e)
+                last_bq_error = bq_error
+                print(f"  [pull] BigQuery error (attempt {_correction+1}): {bq_error[:200]}")
+
+                if _correction >= 2:
+                    break
+                if sql_mode != "llm" or table_name == "suppliers" or not claude_client:
+                    break
+
+                print(f"  [pull] Attempting SQL auto-correction...")
+                allowed_cols_list = table_schema["allowed_columns"]
+                col_schemas = config.get("column_schemas", {})
+                col_lines = []
+                if table_name in col_schemas:
+                    for col in allowed_cols_list:
+                        info = col_schemas[table_name]["columns"].get(col, {})
+                        col_lines.append(
+                            f"  {col} ({info.get('type','')}: {info.get('description','')})"
+                            if info else f"  {col}"
+                        )
+                else:
+                    col_lines = [f"  {c}" for c in allowed_cols_list]
+
+                fix_prompt = (
+                    "This BigQuery SQL failed. Fix it using ONLY the allowed columns listed.\n"
+                    f"Error: {bq_error}\n\n"
+                    f"Failing SQL:\n{sql}\n\n"
+                    f"Allowed columns for {project}.{dataset}.{table_name}:\n"
+                    + "\n".join(col_lines)
+                    + "\n\nReturn ONLY the corrected SQL, nothing else."
+                )
+                try:
+                    fix_resp = claude_client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=1500,
+                        messages=[{"role": "user", "content": fix_prompt}]
+                    )
+                    fixed = fix_resp.content[0].text.strip()
+                    if fixed.startswith("```"):
+                        fixed = fixed.split("```")[1]
+                        if fixed.lower().startswith("sql"):
+                            fixed = fixed[3:]
+                    fixed = fixed.strip()
+                    if fixed.upper().startswith("SELECT") or fixed.upper().startswith("WITH"):
+                        print(f"  [pull] SQL auto-corrected on attempt {_correction+1}")
+                        sql = fixed
+                        queries[table_name] = sql
+                    else:
+                        print(f"  [pull] Correction returned non-SQL, giving up")
+                        break
+                except Exception as fix_e:
+                    print(f"  [pull] Correction call failed: {fix_e}")
+                    break
+
+        if rows is None:
+            error_msg = f"BigQuery query failed for {table_name}: {last_bq_error}"
             print(f"  [pull] ERROR — {error_msg}")
             errors.append(error_msg)
             pull_validation[table_name] = {

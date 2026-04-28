@@ -156,8 +156,10 @@ def _safe_json(val):
         return None
     if isinstance(val, (dict, list)):
         return val
+    # BigQuery JSON columns return a special object — convert via str first
     try:
-        return json.loads(val)
+        s = str(val) if not isinstance(val, str) else val
+        return json.loads(s)
     except Exception:
         return val
 
@@ -255,7 +257,8 @@ def get_run(run_id: str, user: AuthUser = Depends(require_reporter)):
     client = bq()
     run_rows = list(client.query(f"""
         SELECT * FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
-        WHERE runID = '{run_id}' LIMIT 1
+        WHERE runID = '{run_id}'
+        ORDER BY startedAt DESC LIMIT 1
     """).result())
     if not run_rows:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
@@ -265,13 +268,22 @@ def get_run(run_id: str, user: AuthUser = Depends(require_reporter)):
         SELECT reportNarrative, reportJSON, policyDecision,
                validationPassed, validationFailed, hallucinationFlags
         FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
-        WHERE runID = '{run_id}' LIMIT 1
+        WHERE runID = '{run_id}'
+        ORDER BY queuedAt DESC LIMIT 1
     """).result())
     if pending_rows:
         p = _row_to_dict(pending_rows[0])
+        report_json = _safe_json(p.get("reportJSON")) or {}
+        policy_outcome = (
+            report_json.get("policy_outcome") or
+            report_json.get("policyOutcome") or
+            {"decision": p.get("policyDecision"), "rule_results": [], "rules_passed": 0, "rules_evaluated": 0}
+        )
         run.update({
             "reportNarrative":    p.get("reportNarrative"),
-            "reportJSON":         _safe_json(p.get("reportJSON")),
+            "reportJSON":         report_json,
+            "policyOutcome":      policy_outcome,
+            "policyDecision":     p.get("policyDecision"),
             "validationPassed":   p.get("validationPassed", 0),
             "validationFailed":   p.get("validationFailed", 0),
             "hallucinationFlags": p.get("hallucinationFlags", 0),
@@ -331,7 +343,8 @@ def get_run_status(run_id: str, user: AuthUser = Depends(require_reporter)):
 
         conf_rows = list(client.query(f"""
             SELECT confidence FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
-            WHERE runID = '{run_id}' LIMIT 1
+            WHERE runID = '{run_id}'
+            ORDER BY startedAt DESC LIMIT 1
         """).result())
         conf_val = dict(conf_rows[0]).get("confidence") if conf_rows else None
 
@@ -350,7 +363,8 @@ def get_run_status(run_id: str, user: AuthUser = Depends(require_reporter)):
     rows = list(client.query(f"""
         SELECT status, confidence, policyDecision
         FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
-        WHERE runID = '{run_id}' LIMIT 1
+        WHERE runID = '{run_id}'
+        ORDER BY startedAt DESC LIMIT 1
     """).result())
     if not rows:
         return {"runID": run_id, "status": "running"}
@@ -1079,6 +1093,64 @@ def get_reports(limit: int = 20, user: AuthUser = Depends(require_reporter)):
     return {"reports": [_row_to_dict(r) for r in rows]}
 
 
+
+# ── GET /api/customer-voice/{supplier_id} ────────────────────────────────────
+
+@app.get("/api/customer-voice/{supplier_id}")
+def get_customer_voice(supplier_id: str, month: str = None, user: AuthUser = Depends(require_internal)):
+    client = bq()
+
+    # Enforce supplier role can only see their own data
+    if user.role == "supplier" and user.supplier_id != supplier_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get available months first
+    month_rows = list(client.query(f"""
+        SELECT DISTINCT analysisMonth
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.sku_comment_intelligence`
+        WHERE supplierID = '{supplier_id}'
+        ORDER BY analysisMonth DESC
+        LIMIT 12
+    """).result())
+
+    months = [str(dict(r)["analysisMonth"]) for r in month_rows]
+    if not months:
+        return {"supplierID": supplier_id, "months": [], "skus": []}
+
+    selected_month = month if month in months else months[0]
+
+    rows = list(client.query(f"""
+        SELECT *
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.sku_comment_intelligence`
+        WHERE supplierID = '{supplier_id}'
+          AND analysisMonth = '{selected_month}'
+        ORDER BY maxDeviation DESC
+    """).result())
+
+    import json
+
+    skus = []
+    for row in rows:
+        r = _row_to_dict(row)
+        # Parse JSON fields
+        for field in ("incidentThemes", "returnThemes", "rootCauses", "improvements"):
+            val = r.get(field)
+            if isinstance(val, str):
+                try:
+                    r[field] = json.loads(val)
+                except Exception:
+                    r[field] = []
+            elif val is None:
+                r[field] = []
+        skus.append(r)
+
+    return {
+        "supplierID": supplier_id,
+        "selectedMonth": selected_month,
+        "months": months,
+        "skus": skus,
+    }
+
 # ── GET /api/recent-reports  (reporter: admin + business) ────────────────────
 
 @app.get("/api/recent-reports")
@@ -1194,6 +1266,62 @@ def get_recent_reports(limit: int = 10, user: AuthUser = Depends(require_reporte
         results.append(run)
 
     return {"reports": results}
+
+
+# ── GET /api/customer-voice/{supplier_id} ────────────────────────────────────
+
+@app.get("/api/customer-voice/{supplier_id}")
+def get_customer_voice(supplier_id: str, month: str = None, user: AuthUser = Depends(get_current_user)):
+    """Customer Voice data from sku_comment_intelligence. Accessible to all roles
+    but suppliers can only see their own data."""
+    if user.role == "supplier" and user.supplier_id != supplier_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    client = bq()
+
+    # Get available months
+    months_rows = list(client.query(f"""
+        SELECT DISTINCT analysisMonth
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.sku_comment_intelligence`
+        WHERE supplierID = '{supplier_id}'
+        ORDER BY analysisMonth DESC
+    """).result())
+
+    if not months_rows:
+        return {"supplierID": supplier_id, "month": None, "months": [], "skus": []}
+
+    available_months = [str(dict(r)["analysisMonth"]) for r in months_rows]
+    selected_month = month if month in available_months else available_months[0]
+
+    rows = list(client.query(f"""
+        SELECT *
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.sku_comment_intelligence`
+        WHERE supplierID = '{supplier_id}'
+        AND analysisMonth = '{selected_month}'
+        ORDER BY maxDeviation DESC
+    """).result())
+
+    import json
+
+    skus = []
+    for row in rows:
+        r = _row_to_dict(row)
+        # Parse JSON fields
+        for field in ("incidentThemes", "returnThemes", "rootCauses", "improvements"):
+            val = r.get(field)
+            if isinstance(val, str):
+                try: r[field] = json.loads(val)
+                except: r[field] = []
+            elif val is None:
+                r[field] = []
+        skus.append(r)
+
+    return {
+        "supplierID": supplier_id,
+        "month": selected_month,
+        "months": available_months,
+        "skus": skus,
+    }
 
 # ── Serve React frontend ──────────────────────────────────────────────────────
 
