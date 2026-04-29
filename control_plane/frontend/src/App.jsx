@@ -347,6 +347,99 @@ function BusinessDashboard() {
 }
 
 // ── Supplier Account Dashboard ────────────────────────────────────────────────
+
+function SupplierReports({supplierID}) {
+  const [reports,setReports] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [expanded,setExpanded] = useState(null);
+
+  useEffect(()=>{
+    if(!supplierID) return;
+    setLoading(true);
+    apiFetch(`/api/reports/supplier/${supplierID}`)
+      .then(d=>setReports(d.reports||[]))
+      .catch(()=>setReports([]))
+      .finally(()=>setLoading(false));
+  },[supplierID]);
+
+  const downloadPDF = (report) => {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>${report.reportType} - ${report.reportDate}</title>
+<style>
+  body{font-family:'Georgia',serif;max-width:900px;margin:40px auto;padding:0 40px;color:#111;line-height:1.7}
+  h1,h2,h3{font-family:'Arial',sans-serif;color:#1e293b}
+  h2{font-size:16px;margin-top:28px}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px}
+  th{background:#f1f5f9;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase}
+  td{padding:8px 12px;border-bottom:1px solid #e2e8f0}
+  .meta{font-size:12px;color:#64748b;margin-bottom:24px;font-family:Arial,sans-serif}
+  pre{white-space:pre-wrap;font-family:inherit}
+  @media print{body{margin:20px}}
+</style></head><body>
+<div class="meta">Supplier: ${supplierID} &nbsp;·&nbsp; Date: ${report.reportDate} &nbsp;·&nbsp; Confidence: ${Math.round((report.confidence||0)*100)}% &nbsp;·&nbsp; Approved: ${report.approvedAt?report.approvedAt.slice(0,10):'N/A'}</div>
+<pre>${report.reportNarrative||'No narrative available.'}</pre>
+</body></html>`;
+    const w = window.open('','_blank');
+    if(!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(()=>{ w.print(); },500);
+  };
+
+  if(loading) return <div style={{padding:40,textAlign:"center",color:C.muted}}>Loading reports...</div>;
+  if(!reports.length) return (
+    <div style={{padding:40,textAlign:"center",color:C.muted}}>
+      <div style={{fontSize:32,marginBottom:12}}>{"📋"}</div>
+      <div style={{fontSize:14}}>No approved reports yet.</div>
+      <div style={{fontSize:12,marginTop:6}}>Reports shared by your account manager will appear here.</div>
+    </div>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,padding:"20px 0"}}>
+      {reports.map(r=>{
+        const isOpen = expanded===r.reportID;
+        const conf = Math.round((r.confidence||0)*100);
+        const confCol = conf>=85?C.green:conf>=70?C.amber:C.red;
+        const title = r.reportType==="monthly_supplier_account"?"Monthly Account Report":
+                      r.reportType==="adhoc_supplier"?"Ad-Hoc Report":
+                      r.reportType.replace(/_/g," ").replace(/\w/g,c=>c.toUpperCase());
+        return (
+          <div key={r.reportID} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden"}}>
+            <div onClick={()=>setExpanded(isOpen?null:r.reportID)}
+              style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 20px",cursor:"pointer"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:600,color:C.text}}>{title}</div>
+                <div style={{fontSize:12,color:C.muted,marginTop:3}}>
+                  {r.reportDate} &nbsp;·&nbsp; Approved {r.approvedAt?r.approvedAt.slice(0,10):"—"}
+                  {r.approvedBy?` · by ${r.approvedBy}`:""}
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:12,color:confCol,fontWeight:600}}>{conf}%</span>
+                <button onClick={e=>{e.stopPropagation();downloadPDF(r);}}
+                  style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                    padding:"4px 12px",color:C.muted,fontSize:11,cursor:"pointer"}}>
+                  Download PDF
+                </button>
+                <span style={{color:C.muted}}>{isOpen?"▲":"▼"}</span>
+              </div>
+            </div>
+            {isOpen&&(
+              <div style={{borderTop:`1px solid ${C.border}`,padding:"20px 24px",
+                fontSize:13,lineHeight:1.8,color:C.text,whiteSpace:"pre-wrap",
+                fontFamily:"Georgia,serif",maxHeight:600,overflowY:"auto"}}>
+                {r.reportNarrative||"No narrative."}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   const [suppliers,setSuppliers]     = useState([]);
   const [selectedID,setSelectedID]   = useState(initialSupplier||"");
@@ -406,7 +499,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   return (
     <div>
       <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
-        {[{id:"dashboard",label:"Dashboard"},{id:"customer_voice",label:"🗣 Customer Voice"}].map(t=>(
+        {[{id:"dashboard",label:"Dashboard"},{id:"reports",label:"Reports"},{id:"customer_voice",label:"🗣 Customer Voice"}].map(t=>(
           <button key={t.id} onClick={()=>setSupView(t.id)}
             style={{background:"none",border:"none",borderBottom:supView===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:supView===t.id?C.blue:C.muted,padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:supView===t.id?600:400}}>
             {t.label}
@@ -414,6 +507,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
         ))}
       </div>
       {supView==="customer_voice" && <CustomerVoice supplierID={selectedID||initialSupplier}/>}
+      {supView==="reports" && <SupplierReports supplierID={selectedID||initialSupplier}/>}
       {supView==="dashboard" && (
       <div>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20,gap:16,flexWrap:"wrap"}}>
@@ -1397,6 +1491,31 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
 
   useEffect(()=>{ apiFetch(`/api/runs/${runSummary.runID}`).then(d=>{ setRun(d); setEditedNarrative(d.reportNarrative||""); setLoading(false); }).catch(e=>{ setError(e.message); setLoading(false); }); },[runSummary.runID]);
 
+  const [rerunID,setRerunID]         = useState(null);
+  const [rerunStatus,setRerunStatus] = useState(null);
+  const [rerunStart,setRerunStart]   = useState(null);
+  const [rerunError,setRerunError]   = useState(null);
+  const rerunPollRef                 = useRef(null);
+
+  const handleRerun = async() => {
+    setRerunError(null);
+    try {
+      const res = await apiFetch(`/api/runs/rerun/${run.runID}`,{method:"POST"});
+      setRerunID(res.rerunID);
+      setRerunStatus("running");
+      setRerunStart(Date.now());
+      rerunPollRef.current = setInterval(async()=>{
+        try {
+          const s = await apiFetch(`/api/runs/${res.rerunID}/status`);
+          setRerunStatus(s.status);
+          if(s.status&&s.status!=="running"&&s.status!=="starting") {
+            clearInterval(rerunPollRef.current);
+          }
+        } catch(e){}
+      }, 3000);
+    } catch(e){ setRerunError(e.message); }
+  };
+
   const handleSubmit = async() => {
     if(!decision||(decision==="rejected"&&!reason.trim())) return;
     setSubmitting(true);
@@ -1408,10 +1527,53 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
 
   if(loading) return <Spinner/>;
   if(submitted) return (
-    <div style={{textAlign:"center",padding:"80px 40px"}}>
-      <div style={{fontSize:48,marginBottom:16}}>{decision==="rejected"?"✗":"✓"}</div>
-      <div style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:8}}>{decision==="approved"?"Approved":decision==="edited_and_approved"?"Edited & Approved":"Rejected"}{shareWithSupplier?" · Shared with supplier":""}</div>
-      <button onClick={onBack} style={{background:C.surface,border:"none",color:C.muted,borderRadius:7,padding:"10px 24px",cursor:"pointer",fontSize:13,fontWeight:600,marginTop:24}}>← Back to Queue</button>
+    <div style={{padding:"40px 32px"}}>
+      <div style={{textAlign:"center",marginBottom:24}}>
+        <div style={{fontSize:48,marginBottom:12}}>{decision==="rejected"?"✗":"✓"}</div>
+      </div>
+      {decision==="rejected"&&(
+        <div style={{marginBottom:24}}>
+          {!rerunID&&(
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:13,color:C.muted,marginBottom:12}}>
+                Want the agent to re-run with your correction applied?
+              </div>
+              {rerunError&&<div style={{color:C.red,fontSize:12,marginBottom:8}}>{rerunError}</div>}
+              <button onClick={handleRerun}
+                style={{background:"rgba(96,165,250,0.15)",border:"1px solid rgba(96,165,250,0.4)",
+                  borderRadius:8,padding:"10px 24px",color:C.blue,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+                ↻ Re-run with correction
+              </button>
+            </div>
+          )}
+          {rerunID&&(
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px"}}>
+              <div style={{fontSize:12,color:C.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:"0.06em"}}>
+                Correction Re-run
+              </div>
+              {(rerunStatus==="running"||rerunStatus==="starting")&&(
+                <PipelineProgress startTime={rerunStart} status={rerunStatus}/>
+              )}
+              {rerunStatus&&rerunStatus!=="running"&&rerunStatus!=="starting"&&(
+                <div style={{display:"flex",alignItems:"center",gap:8,fontSize:13}}>
+                  <span style={{color:rerunStatus==="pending_review"?C.amber:rerunStatus==="failed"?C.red:C.green,fontSize:16}}>
+                    {rerunStatus==="pending_review"?"⏳":rerunStatus==="failed"?"✗":"✓"}
+                  </span>
+                  <span style={{color:C.text}}>
+                    {rerunStatus==="pending_review"?"Re-run complete — new report is in the queue":
+                     rerunStatus==="failed"?"Re-run failed — check the queue for details":
+                     "Re-run complete"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:8}}>{decision==="approved"?"Approved":decision==="edited_and_approved"?"Edited & Approved":"Rejected"}{shareWithSupplier?" · Shared with supplier":""}</div>
+        <button onClick={onBack} style={{background:C.surface,border:"none",color:C.muted,borderRadius:7,padding:"10px 24px",cursor:"pointer",fontSize:13,fontWeight:600,marginTop:24}}>← Back to Queue</button>
+      </div>
     </div>
   );
 

@@ -135,6 +135,7 @@ class DecisionRequest(BaseModel):
     reason:            Optional[str]  = None
     editedNarrative:   Optional[str]  = None
     shareWithSupplier: Optional[bool] = False
+    triggerRerun:      Optional[bool] = True
 
 class RunRequest(BaseModel):
     reportType: str
@@ -225,10 +226,18 @@ def get_queue(user: AuthUser = Depends(require_admin)):
             p.queuedAt, p.status, p.confidence, p.policyDecision,
             p.validationPassed, p.validationFailed, p.hallucinationFlags,
             p.reportNarrative, p.errors,
-            a.flags
+            a.flags, a.goal
         FROM `{GCP_PROJECT}.{BQ_DATASET}.pending_reports` p
-        LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.agent_runs` a ON p.runID = a.runID
+        LEFT JOIN (
+            SELECT runID, flags, goal,
+                   ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) as rn
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+        ) a ON p.runID = a.runID AND a.rn = 1
         WHERE p.status = 'pending'
+          AND p.runID NOT IN (
+            SELECT runID FROM `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
+            WHERE decision IN ('approved','rejected','edited_and_approved')
+          )
         ORDER BY p.queuedAt DESC
         LIMIT 50
     """).result())
@@ -460,7 +469,92 @@ def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_report
                 }]
             )
 
-    return {"decisionID": decision_id, "runID": body.runID, "decision": body.decision, "decidedAt": now, "sharedWithSupplier": bool(body.shareWithSupplier)}
+    return {
+        "decisionID": decision_id,
+        "runID": body.runID,
+        "decision": body.decision,
+        "decidedAt": now,
+        "sharedWithSupplier": bool(body.shareWithSupplier),
+    }
+
+
+# ── POST /api/runs/rerun/{run_id} ────────────────────────────────────────────
+
+@app.post("/api/runs/rerun/{run_id}")
+def trigger_rerun(run_id: str, user: AuthUser = Depends(require_reporter)):
+    import threading
+    client = bq()
+
+    # Check retry count — max 2
+    retry_rows = list(client.query(f"""
+        SELECT COUNT(*) as cnt
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
+        WHERE retryTriggered = TRUE
+          AND (runID = '{run_id}' OR retryRunID IN (
+            SELECT runID FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE goal LIKE '%parentRunID:{run_id}%'
+          ))
+    """).result())
+    retry_count = dict(retry_rows[0])["cnt"] if retry_rows else 0
+    if retry_count >= 2:
+        raise HTTPException(status_code=400, detail="Maximum re-run attempts (2) reached for this report.")
+
+    # Fetch original run details
+    orig_goal        = _get_run_field(client, run_id, "goal") or ""
+    orig_report_type = _get_run_field(client, run_id, "reportType") or "adhoc_business"
+    orig_supplier_id = _get_run_field(client, run_id, "supplierID")
+    orig_audience    = "supplier" if orig_supplier_id else "business"
+
+    if not orig_goal:
+        raise HTTPException(status_code=400, detail="Original run has no goal — cannot re-run.")
+
+    # Fetch rejection reason from human_decisions
+    reason_rows = list(client.query(f"""
+        SELECT reason FROM `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
+        WHERE runID = '{run_id}' AND decision = 'rejected'
+        ORDER BY decidedAt DESC LIMIT 1
+    """).result())
+    reason = dict(reason_rows[0])["reason"] if reason_rows else ""
+
+    # Build corrected goal
+    corrected_goal = (
+        orig_goal + "\n\n" +
+        "CORRECTION FROM REVIEWER: The previous attempt was rejected. " +
+        "Reason: " + (reason or "See reviewer notes.") + "\n" +
+        "Please fix the above issue in your SQL and analysis. " +
+        "parentRunID:" + run_id
+    )
+
+    rerun_id = str(uuid.uuid4())
+
+    # Mark decision as having triggered a rerun
+    try:
+        client.query(f"""
+            UPDATE `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
+            SET retryTriggered = TRUE, retryRunID = '{rerun_id}'
+            WHERE runID = '{run_id}' AND decision = 'rejected'
+        """).result()
+    except Exception:
+        pass
+
+    def _rerun():
+        try:
+            print(f"[api/runs/rerun] Starting re-run {rerun_id} for rejected run {run_id}")
+            _run_agent(
+                report_type = orig_report_type,
+                goal        = corrected_goal,
+                audience    = orig_audience,
+                supplier_id = orig_supplier_id,
+                date_from   = None,
+                date_to     = None,
+                thread_id   = rerun_id,
+            )
+        except Exception as e:
+            print(f"[api/runs/rerun] Re-run {rerun_id} failed: {e}")
+
+    threading.Thread(target=_rerun, daemon=True).start()
+    print(f"[api/runs/rerun] Re-run {rerun_id} triggered for run {run_id}")
+    return {"rerunID": rerun_id, "originalRunID": run_id, "status": "running"}
 
 
 # ── GET /api/history  (admin only) ────────────────────────────────────────────
@@ -1094,6 +1188,30 @@ def get_reports(limit: int = 20, user: AuthUser = Depends(require_reporter)):
 
 
 
+# ── GET /api/reports/supplier/{supplier_id} ──────────────────────────────
+
+@app.get("/api/reports/supplier/{supplier_id}")
+def get_supplier_reports(supplier_id: str, limit: int = 20, user: AuthUser = Depends(get_current_user)):
+    # Suppliers can only see their own reports; business/admin can see any
+    if user.role == "supplier" and user.supplier_id != supplier_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user.role not in ("admin", "business", "demo", "supplier"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    client = bq()
+    rows = list(client.query(f"""
+        SELECT
+            reportID, supplierID, reportType, audience,
+            reportDate, approvedAt, approvedBy,
+            reportNarrative, confidence
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+        WHERE supplierID = '{supplier_id}'
+           OR (audience = 'supplier' AND supplierID = '{supplier_id}')
+        ORDER BY approvedAt DESC
+        LIMIT {limit}
+    """).result())
+    return {"reports": [_row_to_dict(r) for r in rows]}
+
+
 # ── GET /api/customer-voice/{supplier_id} ────────────────────────────────────
 
 @app.get("/api/customer-voice/{supplier_id}")
@@ -1266,6 +1384,30 @@ def get_recent_reports(limit: int = 10, user: AuthUser = Depends(require_reporte
         results.append(run)
 
     return {"reports": results}
+
+
+# ── GET /api/reports/supplier/{supplier_id} ──────────────────────────────
+
+@app.get("/api/reports/supplier/{supplier_id}")
+def get_supplier_reports(supplier_id: str, limit: int = 20, user: AuthUser = Depends(get_current_user)):
+    # Suppliers can only see their own reports; business/admin can see any
+    if user.role == "supplier" and user.supplier_id != supplier_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user.role not in ("admin", "business", "demo", "supplier"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    client = bq()
+    rows = list(client.query(f"""
+        SELECT
+            reportID, supplierID, reportType, audience,
+            reportDate, approvedAt, approvedBy,
+            reportNarrative, confidence
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.approved_reports`
+        WHERE supplierID = '{supplier_id}'
+           OR (audience = 'supplier' AND supplierID = '{supplier_id}')
+        ORDER BY approvedAt DESC
+        LIMIT {limit}
+    """).result())
+    return {"reports": [_row_to_dict(r) for r in rows]}
 
 
 # ── GET /api/customer-voice/{supplier_id} ────────────────────────────────────

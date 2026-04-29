@@ -500,7 +500,18 @@ def analyse_with_llm(
     """
     is_supplier = audience == "supplier"
 
-    goal_context = ("\nThe original user goal was: " + goal + "\n") if goal else ""
+    # Strip the correction block from goal for analysis context - keep only original intent
+    correction_context = ""
+    clean_goal = goal or ""
+    if goal and "CORRECTION FROM REVIEWER:" in goal:
+        parts = goal.split("\n\nCORRECTION FROM REVIEWER:")
+        clean_goal = parts[0].strip()
+        import re as _re3
+        m = _re3.search(r"CORRECTION FROM REVIEWER:(.+?)(?:Please fix|parentRunID)", goal, _re3.DOTALL)
+        if m:
+            correction_context = "\nNote: This is a correction run. Previous attempt was rejected. Reviewer reason: " + m.group(1).strip()
+
+    goal_context = ("\nThe original user goal was: " + clean_goal + correction_context + "\n") if clean_goal else ""
 
     system_prompt = (
         "You are the Analyse node of a supplier performance BI agent.\n"

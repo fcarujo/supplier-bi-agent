@@ -209,11 +209,29 @@ def generate_sql_llm(
         + ("\n" + date_context if date_context else "")
     )
 
+    # Detect if this is a correction run and extract the reviewer's reason
+    correction_note = ""
+    if goal and "CORRECTION FROM REVIEWER:" in goal:
+        import re as _re2
+        m = _re2.search(r"CORRECTION FROM REVIEWER:(.+?)(?:Please fix|parentRunID)", goal, _re2.DOTALL)
+        if m:
+            correction_note = (
+                "\n\nCRITICAL — THIS IS A CORRECTION RUN:\n"
+                "The previous SQL was rejected by a human reviewer. "
+                "The specific issue you MUST fix is:" + m.group(1).strip() + "\n"
+                "Do NOT repeat the same mistake. Fix this exact issue in your SQL."
+            )
+        # Use only the original goal (before the correction block) for context
+        original_goal = goal.split("\n\nCORRECTION FROM REVIEWER:")[0].strip()
+    else:
+        original_goal = goal
+
     user_prompt = (
-        f"Report goal: {goal}\n"
+        f"Report goal: {original_goal}\n"
         f"Table: {table_name}\n"
         f"Audience: {audience}\n"
         + (f"Supplier: {supplier_id}\n" if supplier_scoped and supplier_id else "")
+        + correction_note
         + "\nWrite the SQL query. Return only the SQL, nothing else."
     )
 

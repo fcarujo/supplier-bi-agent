@@ -112,7 +112,16 @@ def generate_business_report(
     LLM call 4a — generate business overview narrative.
     For internal leadership. Portfolio-level, all suppliers.
     """
-    goal_line = f"The user specifically asked for: {goal}\n" if goal else ""
+    # Strip correction block - generate only needs the original intent
+    clean_goal_for_gen = goal or ""
+    correction_note_for_gen = ""
+    if goal and "CORRECTION FROM REVIEWER:" in goal:
+        clean_goal_for_gen = goal.split("\n\nCORRECTION FROM REVIEWER:")[0].strip()
+        import re as _re4
+        m = _re4.search(r"CORRECTION FROM REVIEWER:(.+?)(?:Please fix|parentRunID)", goal, _re4.DOTALL)
+        if m:
+            correction_note_for_gen = "\nNote: This is a correction run. The previous report was rejected because: " + m.group(1).strip() + " Make sure this report addresses this issue directly."
+    goal_line = ("The user specifically asked for: " + clean_goal_for_gen + correction_note_for_gen + "\n") if clean_goal_for_gen else ""
 
     system_prompt = f"""You are generating a supplier performance report for internal leadership.
 Write in clear, professional business language.
