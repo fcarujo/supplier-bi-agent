@@ -813,12 +813,14 @@ function PipelineProgress({ startTime, status }) {
   );
 }
 
-function NewReport({onCreated}) {
+function NewReport({onCreated, isDemo=false}) {
   const [suppliers,setSuppliers] = useState([]);
   const [reportType,setReportType] = useState("adhoc_business");
   const [supplierID,setSupplierID] = useState("");
   const [goal,setGoal]         = useState("");
   const [reportTitle,setReportTitle] = useState("");
+  const [demoPhase,setDemoPhase]     = useState(null);
+  const [demoStep,setDemoStep]       = useState(0);
   const [running,setRunning] = useState(false);
   const [runID,setRunID] = useState(null);
   const [runData,setRunData] = useState(null);
@@ -829,14 +831,63 @@ function NewReport({onCreated}) {
   const [refreshKey,setRefreshKey] = useState(0);
   const pollRef = useRef(null);
 
-  useEffect(()=>{ apiFetch("/api/suppliers").then(d=>setSuppliers(d.suppliers||[])).catch(()=>{}); return ()=>{ if(pollRef.current) clearInterval(pollRef.current); }; },[]);
+  useEffect(()=>{
+    if (isDemo) {
+      setSuppliers([{supplierID:'SUP001',supplierName:'Apex Manufacturing'}]);
+    } else {
+      apiFetch("/api/suppliers").then(d=>setSuppliers(d.suppliers||[])).catch(()=>{});
+    }
+    return ()=>{ if(pollRef.current) clearInterval(pollRef.current); };
+  },[isDemo]);
 
   const isSupplier = reportType.includes("supplier");
+
+  // Demo pre-fill: set goal/title/supplier based on report type
+  useEffect(() => {
+    if (!isDemo) return;
+    if (reportType === "adhoc_supplier") {
+      setGoal("Show me the incident and return rate trend for SUP001 over the last 6 months and flag any issues");
+      setReportTitle("SUP001 Performance Review");
+      setSupplierID("SUP001");
+    } else {
+      setGoal("Show me the incident rate trend for all suppliers over the last 6 months and flag any above the portfolio average");
+      setReportTitle("Portfolio Incident Rate Analysis");
+      setSupplierID("");
+    }
+  }, [isDemo, reportType]);
   const isReady    = status&&!["running","starting"].includes(status);
   const TERMINAL   = ["pending_review","pending_publish","approved","rejected","escalated","failed","completed"];
   const IN_QUEUE   = ["pending_review","escalated"];
 
+  const DEMO_REPORTS = {
+    "adhoc_supplier": {
+      confidence: 0.87,
+      status: "pending_review",
+      reportNarrative: `# SUP001 Performance Review\n\n**Confidence: 87%** | Ad Hoc Supplier Report\n\n## Executive Summary\n\nApex Manufacturing (SUP001) recorded an incident rate of 10.2% over the last 6 months, broadly in line with the portfolio average of 11.02%. The return rate of 6.1% is below the 6.4% portfolio average. No structural deterioration is detected, however the Electronics category warrants monitoring — incident rate reached 12.4% in April, above the category average of 11.8%.\n\n## Month-by-Month Trend\n\n| Month | Incident Rate | Return Rate | Orders |\n|---|---|---|---|\n| Nov 2025 | 9.8% | 5.9% | 3,241 |\n| Dec 2025 | 10.1% | 6.0% | 3,180 |\n| Jan 2026 | 10.3% | 6.2% | 3,420 |\n| Feb 2026 | 10.0% | 6.1% | 3,380 |\n| Mar 2026 | 10.4% | 6.3% | 3,510 |\n| Apr 2026 | 10.6% | 6.2% | 3,290 |\n\n## Category Breakdown\n\n**Electronics — Watch.** Incident rate reached 12.4% in April, above the 11.8% category average. Volume is modest (420 orders in April) but the trend is upward for the second consecutive month.\n\n**Sports and Outdoors — Strong.** Consistent 8.1% incident rate across all 6 months. Best-performing category in the SUP001 portfolio.\n\n## Recommendation\n\nNo immediate action required. Schedule a routine supplier review to discuss the Electronics upward trend before it reaches escalation threshold.`,
+    },
+    "adhoc_business": {
+      confidence: 0.89,
+      status: "pending_review",
+      reportNarrative: `# Portfolio Incident Rate Analysis\n\n**Confidence: 89%** | Ad Hoc Business Report\n\n## Executive Summary\n\nAcross the portfolio the overall incident rate stands at 11.02% over the last 6 months. Four suppliers are operating above this average. SUP002 (Horizon Global Goods) records the highest rate at 13.4% with a worsening month-on-month trend since February. SUP003 (Summit Supply Chain) is the strongest performer at 8.1%, consistently below average across all 6 months.\n\n## Key Findings\n\n**SUP002 — Action Required.** Incident rate climbed from 11.8% to 13.4% over the period, a 1.6pp deterioration. Budget-tier Electronics in the supplier_direct channel accounts for 68% of the increase.\n\n**SUP004 — Watch.** Rate of 11.8% is marginally above average. Trend is flat rather than worsening but the Electronics category requires monitoring.\n\n**SUP003 — Benchmark.** Consistent 8.1% across all 6 months. Worth examining as a quality benchmark for other suppliers.\n\n## Recommendation\n\nTrigger a supplier review meeting with SUP002 focused on the budget Electronics supplier_direct channel. Request a root cause analysis and corrective action plan within 14 days.`,
+    },
+  };
+
   const handleSubmit = async () => {
+    if (!goal.trim()||(isSupplier&&!supplierID)) return;
+    if (isDemo) {
+      const demoResult = DEMO_REPORTS[reportType] || DEMO_REPORTS["adhoc_business"];
+      setDemoPhase("running"); setDemoStep(0); setError(null); setRunData(null);
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 800 + Math.random()*400));
+        setDemoStep(i+1);
+      }
+      setDemoPhase("done");
+      setRunData(demoResult);
+      setStatus("pending_review");
+      setRunning(false);
+      setRefreshKey(k=>k+1);
+      return;
+    }
     if (!goal.trim()||(isSupplier&&!supplierID)) return;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     setRunning(true); setError(null); setStatus("starting"); setRunData(null); setRunID(null); setStartTime(Date.now());
@@ -879,6 +930,11 @@ function NewReport({onCreated}) {
         <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Trigger an ad-hoc agent run · review results · choose to share or keep internal</p>
       </div>
       {error&&<ErrMsg message={error}/>}
+      {isDemo && (
+        <div style={{marginBottom:16,padding:"12px 16px",background:"rgba(96,165,250,0.08)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:8,fontSize:13,color:C.muted}}>
+          <span style={{fontWeight:600,color:C.blue}}>Demo mode.</span> Questions are pre-filled. Select a report type and press Run to see the full agent pipeline.
+        </div>
+      )}
       <Card style={{display:"flex",flexDirection:"column",gap:16,marginBottom:24}}>
         <div>
           <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Report type</label>
@@ -1048,7 +1104,7 @@ function RecentReports({refreshKey}) {
 }
 
 // ── Ask a Question — Conversational ──────────────────────────────────────────
-function AskQuestion() {
+function AskQuestion({isDemo=false}) {
   const [suppliers,setSuppliers]     = useState([]);
   const [supplierID,setSupplierID]   = useState("");
   const [question,setQuestion]       = useState("");
@@ -1124,6 +1180,32 @@ function AskQuestion() {
   const toggleSQL  = (i) => setExpandedSQL(p => ({...p, [i]: !p[i]}));
   const toggleData = (i) => setExpandedData(p => ({...p, [i]: !p[i]}));
 
+  const DEMO_EXCHANGES = [
+    { question:"Which supplier had the highest incident rate last month?",
+      sql:"SELECT supplierID, supplierName,\n  ROUND(incident_rate_pct,2) AS incident_rate_pct\nFROM supplier_bi.v_supplier_monthly\nWHERE month = DATE_TRUNC(DATE_SUB(CURRENT_DATE(),INTERVAL 1 MONTH),MONTH)\nORDER BY incident_rate_pct DESC LIMIT 5",
+      rows:5, data:[
+        {supplierID:"SUP002",supplierName:"Horizon Global Goods",incident_rate_pct:13.4},
+        {supplierID:"SUP004",supplierName:"CoreTech Industries",incident_rate_pct:11.8},
+        {supplierID:"SUP001",supplierName:"Apex Manufacturing",incident_rate_pct:10.2},
+        {supplierID:"SUP006",supplierName:"Meridian Supplies",incident_rate_pct:9.8},
+        {supplierID:"SUP003",supplierName:"Summit Supply Chain",incident_rate_pct:8.1},
+      ]},
+    { question:"What are the most common return reasons for Electronics?",
+      sql:"SELECT returnReason, COUNT(*) AS total_returns,\n  ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(),1) AS pct\nFROM supplier_bi.returns\nWHERE productCategory = 'Electronics'\n  AND returnDate >= DATE_SUB(CURRENT_DATE(),INTERVAL 90 DAY)\nGROUP BY returnReason ORDER BY total_returns DESC",
+      rows:4, data:[
+        {returnReason:"defective_product",total_returns:487,pct:38.2},
+        {returnReason:"not_as_described",total_returns:312,pct:24.5},
+        {returnReason:"damaged_in_transit",total_returns:198,pct:15.5},
+        {returnReason:"changed_mind",total_returns:278,pct:21.8},
+      ]},
+    { question:"Compare incident rates across fulfilment channels",
+      sql:"SELECT fulfilmentChannel,\n  COUNT(*) AS total_orders,\n  ROUND(SUM(incidentFlag)*100.0/COUNT(*),2) AS incident_rate_pct\nFROM supplier_bi.orders\nWHERE orderDate >= DATE_SUB(CURRENT_DATE(),INTERVAL 90 DAY)\nGROUP BY fulfilmentChannel\nORDER BY incident_rate_pct DESC",
+      rows:3, data:[
+        {fulfilmentChannel:"supplier_direct",total_orders:18420,incident_rate_pct:14.2},
+        {fulfilmentChannel:"third_party_logistics",total_orders:22840,incident_rate_pct:11.8},
+        {fulfilmentChannel:"warehouse",total_orders:31560,incident_rate_pct:9.4},
+      ]},
+  ];
   const examples = [
     "Which supplier had the highest incident rate last month?",
     "Top 10 SKUs by resolution cost in the last 30 days",
@@ -1133,6 +1215,62 @@ function AskQuestion() {
   ];
 
   const hasConversation = exchanges.length > 0;
+
+  if (isDemo) return (
+    <div style={{maxWidth:900}}>
+      <div style={{marginBottom:20}}>
+        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Ask a Question</h2>
+        <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Conversational natural language queries against the BigQuery data warehouse</p>
+      </div>
+      <div style={{marginBottom:20,padding:"12px 16px",background:"rgba(96,165,250,0.08)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:8,fontSize:13,color:C.muted}}>
+        <span style={{fontWeight:600,color:C.blue}}>Demo mode.</span> Live queries are disabled. Below are real examples of how the agent responds to natural language questions.
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:20,marginBottom:20,maxHeight:480,overflowY:"auto"}}>
+        {DEMO_EXCHANGES.map((ex,i)=>(
+          <div key={i} style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{display:"flex",justifyContent:"flex-end"}}>
+              <div style={{background:"rgba(96,165,250,0.15)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:"12px 12px 4px 12px",padding:"10px 16px",maxWidth:"75%",fontSize:13,color:C.text,lineHeight:1.5}}>{ex.question}</div>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-start"}}>
+              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:"4px 12px 12px 12px",padding:"14px 16px",maxWidth:"90%"}}>
+                <div style={{fontSize:11,color:C.muted,marginBottom:10}}>{ex.rows} rows returned</div>
+                <div style={{overflowX:"auto",marginBottom:10}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead><tr style={{borderBottom:`1px solid ${C.border}`}}>
+                      {Object.keys(ex.data[0]).map(col=>(
+                        <th key={col} style={{padding:"6px 10px",textAlign:"left",color:C.muted,fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>{col}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {ex.data.map((row,j)=>(
+                        <tr key={j} style={{borderBottom:`1px solid ${C.border}`}}>
+                          {Object.values(row).map((val,k)=>(
+                            <td key={k} style={{padding:"6px 10px",color:C.text,fontFamily:typeof val==="number"?"monospace":"inherit",fontSize:12}}>
+                              {typeof val==="number"?(+val).toLocaleString(undefined,{maximumFractionDigits:2}):String(val??"")}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <details style={{fontSize:11}}>
+                  <summary style={{color:C.muted,cursor:"pointer",fontFamily:"monospace"}}>SQL</summary>
+                  <pre style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:10,fontSize:11,color:C.muted,overflow:"auto",whiteSpace:"pre-wrap",margin:"6px 0 0",fontFamily:"monospace"}}>{ex.sql}</pre>
+                </details>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{padding:"14px 16px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,opacity:0.5}}>
+        <div style={{display:"flex",gap:10}}>
+          <input disabled placeholder="Live queries disabled in demo mode" style={{flex:1,background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:"10px 14px",fontSize:13,fontFamily:"inherit"}}/>
+          <button disabled style={{background:"rgba(96,165,250,0.1)",border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:"10px 20px",fontSize:13,fontWeight:600,cursor:"not-allowed"}}>Ask →</button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 120px)",maxWidth:900}}>
@@ -1857,8 +1995,9 @@ function LandingPage({ onSignIn, onDemoLogin }) {
         <div style={{fontSize:13,fontWeight:700,letterSpacing:"-0.02em"}}>Agentic <span style={{color:"#2563eb"}}>Intel</span></div>
         <div style={{marginLeft:"auto",display:"flex",gap:24,alignItems:"center"}}>
           <a href="#how-it-works" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>How it works</a>
+          <a href="#demo" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>Sample outputs</a>
           <a href="#tech" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>Tech stack</a>
-          <a href="#demo" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>See outputs</a>
+          <a href="#security" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>Security</a>
           <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:7,padding:"7px 16px",fontSize:13,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6}}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
             LinkedIn
@@ -1890,7 +2029,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
               Get in touch
             </a>
             <button onClick={onDemoLogin} style={{background:"#fff",color:"#0f172a",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 24px",fontSize:13,fontWeight:600,cursor:"pointer"}}>
-              Explore the live system
+              Explore the demo account
             </button>
           </div>
         </div>
@@ -2088,7 +2227,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
         </div>
       </section>
 
-      <section style={{background:"#fff",borderTop:"1px solid #e2e8f0",padding:"80px 32px"}}>
+      <section id="security" style={{background:"#fff",borderTop:"1px solid #e2e8f0",padding:"80px 32px"}}>
         <div style={{maxWidth:1100,margin:"0 auto"}}>
           <div style={{textAlign:"center",marginBottom:48}}>
             <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>Control plane and audit trail</h2>
@@ -2293,7 +2432,7 @@ export default function App() {
   const allNav = [
     {id:"dashboards",     label:"Dashboards",     adminOnly:false, demoOk:true,  group:"main"},
     {id:"ask",            label:"Ask",            adminOnly:false, demoOk:true,  group:"main"},
-    {id:"new_report",     label:"New Report",     adminOnly:false, demoOk:false, group:"main"},
+    {id:"new_report",     label:"New Report",     adminOnly:false, demoOk:true,  group:"main"},
     {id:"control_plane",  label:"Control Plane",  badge:queueCount, adminOnly:true, demoOk:true, group:"control"},
   ];
   const nav = allNav.filter(item => {
@@ -2354,8 +2493,8 @@ export default function App() {
             {dashTab==="supplier"&&<SupplierDashboard/>}
           </div>
         )}
-        {view==="new_report"    &&<NewReport key={view} onCreated={()=>setView("queue")}/>}
-        {view==="ask"           &&<AskQuestion/>}
+        {view==="new_report"    &&<NewReport key={view} isDemo={isDemo} onCreated={()=>setView("control_plane")}/>}
+        {view==="ask"           &&<AskQuestion isDemo={isDemo}/>}
         {view==="observability" &&<Observability/>}
       </div>
     </div>

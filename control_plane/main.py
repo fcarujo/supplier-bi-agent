@@ -219,7 +219,7 @@ def health():
 # ── GET /api/queue  (admin only) ──────────────────────────────────────────────
 
 @app.get("/api/queue")
-def get_queue(user: AuthUser = Depends(require_admin)):
+def get_queue(user: AuthUser = Depends(require_internal)):
     client = bq()
     rows = list(client.query(f"""
         SELECT
@@ -235,10 +235,14 @@ def get_queue(user: AuthUser = Depends(require_admin)):
             FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
         ) a ON p.runID = a.runID AND a.rn = 1
         WHERE p.status = 'pending'
-          AND p.runID NOT IN (
-            SELECT runID FROM `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
-            WHERE decision IN ('approved','rejected','edited_and_approved')
+          AND (
+            p.runID LIKE 'DEMO_%'
+            OR p.runID NOT IN (
+              SELECT runID FROM `{GCP_PROJECT}.{BQ_DATASET}.human_decisions`
+              WHERE decision IN ('approved','rejected','edited_and_approved')
+            )
           )
+          {"AND p.runID LIKE 'DEMO_%'" if user.role == "demo" else ""}
         ORDER BY p.queuedAt DESC
         LIMIT 50
     """).result())
@@ -263,7 +267,7 @@ def get_queue(user: AuthUser = Depends(require_admin)):
 # ── GET /api/runs/{run_id}  (admin only) ──────────────────────────────────────
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: str, user: AuthUser = Depends(require_reporter)):
+def get_run(run_id: str, user: AuthUser = Depends(require_internal)):
     client = bq()
     run_rows = list(client.query(f"""
         SELECT * FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
@@ -339,7 +343,7 @@ def get_run(run_id: str, user: AuthUser = Depends(require_reporter)):
 # ── GET /api/runs/{run_id}/status  (admin only) ───────────────────────────────
 
 @app.get("/api/runs/{run_id}/status")
-def get_run_status(run_id: str, user: AuthUser = Depends(require_reporter)):
+def get_run_status(run_id: str, user: AuthUser = Depends(require_internal)):
     client = bq()
 
     pending = list(client.query(f"""
@@ -399,7 +403,7 @@ def get_run_status(run_id: str, user: AuthUser = Depends(require_reporter)):
 # ── POST /api/decisions  (admin only) ─────────────────────────────────────────
 
 @app.post("/api/decisions")
-def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_reporter)):
+def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_internal)):
     client      = bq()
     decision_id = str(uuid.uuid4())
     now         = datetime.now(timezone.utc).isoformat()
@@ -433,10 +437,11 @@ def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_report
         raise HTTPException(status_code=500, detail=f"Failed to write decision: {errors}")
 
     try:
-        client.query(f"""
-            UPDATE `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
-            SET status = 'decided' WHERE runID = '{body.runID}'
-        """).result()
+        if not body.runID.startswith("DEMO_"):
+            client.query(f"""
+                UPDATE `{GCP_PROJECT}.{BQ_DATASET}.pending_reports`
+                SET status = 'decided' WHERE runID = '{body.runID}'
+            """).result()
     except Exception:
         pass  # Row may still be in streaming buffer — safe to ignore
 
