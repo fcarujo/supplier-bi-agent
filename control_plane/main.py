@@ -139,6 +139,7 @@ class DecisionRequest(BaseModel):
 
 class RunRequest(BaseModel):
     reportType: str
+    reportTitle: Optional[str] = None
     supplierID: Optional[str] = None
     goal:       str
     dateFrom:   Optional[str] = None
@@ -894,9 +895,10 @@ def trigger_run(body: RunRequest, user: AuthUser = Depends(require_reporter)):
 
     def _run():
         try:
+            effective_goal = ("[" + body.reportTitle + "] " + (body.goal or "")) if body.reportTitle else body.goal
             _run_agent(
                 report_type = body.reportType,
-                goal        = body.goal,
+                goal        = effective_goal,
                 audience    = "supplier" if body.supplierID else "business",
                 supplier_id = body.supplierID.upper() if body.supplierID else None,
                 date_from   = body.dateFrom,
@@ -1285,7 +1287,7 @@ def get_recent_reports(limit: int = 10, user: AuthUser = Depends(require_reporte
     run_rows = list(client.query(f"""
         WITH latest_runs AS (
             SELECT runID, reportType, audience, supplierID,
-                   status, confidence, policyDecision,
+                   status, confidence, policyDecision, goal,
                    MAX(startedAt) AS startedAt
             FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
             WHERE reportType IN ('adhoc_business','adhoc_supplier')

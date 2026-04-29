@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import { auth } from "./firebase";
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import {
@@ -18,7 +18,8 @@ async function apiFetch(path, options = {}) {
 // ── Tokens ────────────────────────────────────────────────────────────────────
 const DARK  = { bg: "#0a0e1a", surface: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.08)", text: "#e2e8f0", muted: "#64748b", blue: "#60a5fa", green: "#22c55e", amber: "#f59e0b", red: "#ef4444", purple: "#a855f7", teal: "#2dd4bf" };
 const LIGHT = { bg: "#f8f9fc", surface: "#ffffff", border: "rgba(0,0,0,0.1)", text: "#1a1f2e", muted: "#64748b", blue: "#2563eb", green: "#16a34a", amber: "#d97706", red: "#dc2626", purple: "#7c3aed", teal: "#0d9488" };
-const C = { ...DARK };
+const C = { ...LIGHT };
+applyTheme("light");
 function applyTheme(t) { const src = t === "light" ? LIGHT : DARK; Object.keys(src).forEach(k => C[k] = src[k]); }
 const COLORS = ["#60a5fa","#22c55e","#f59e0b","#ef4444","#a855f7","#2dd4bf","#fb923c","#f472b6"];
 
@@ -323,7 +324,7 @@ function BusinessDashboard() {
                 <YAxis type="category" dataKey="productCategory" stroke={C.muted} tick={{fontSize:10}} width={95} />
                 <Tooltip {...getTT()} formatter={v=>[`${(+v).toFixed(1)}%`,"Incident Rate"]} />
                 <Bar dataKey="incident_rate_pct" radius={[0,4,4,0]} cursor="pointer">
-                  {filteredCategories.map((r,i)=><Cell key={i} fill={r.productCategory===filterCategory?C.amber:C.purple} opacity={filterCategory&&r.productCategory!==filterCategory?0.35:1} />)}
+                  {filteredCategories.map((r,i)=><Cell key={i} fill={C.blue} opacity={filterCategory&&r.productCategory!==filterCategory?0.35:1} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -336,7 +337,7 @@ function BusinessDashboard() {
         <ResponsiveContainer width="100%" height={200}>
           <PieChart>
             <Pie data={filteredResMix} dataKey="total_incidents" nameKey="incidentResolution" cx="50%" cy="50%" outerRadius={75} label={({name,percent})=>`${(name||"").replace(/_/g," ")} ${(percent*100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-              {filteredResMix.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]} />)}
+              {filteredResMix.map((_,i)=><Cell key={i} fill={C.blue} fillOpacity={[1,0.7,0.5,0.35,0.22,0.14][i%6]} />)}
             </Pie>
             <Tooltip {...getTT()} formatter={(v,n)=>[fmt.num(v),(n||"").replace(/_/g," ")]} />
           </PieChart>
@@ -391,7 +392,7 @@ function SupplierReports({supplierID}) {
   if(!reports.length) return (
     <div style={{padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:32,marginBottom:12}}>{"📋"}</div>
-      <div style={{fontSize:14}}>No approved reports yet.</div>
+      <div style={{fontSize:13}}>No approved reports yet.</div>
       <div style={{fontSize:12,marginTop:6}}>Reports shared by your account manager will appear here.</div>
     </div>
   );
@@ -410,7 +411,7 @@ function SupplierReports({supplierID}) {
             <div onClick={()=>setExpanded(isOpen?null:r.reportID)}
               style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 20px",cursor:"pointer"}}>
               <div>
-                <div style={{fontSize:14,fontWeight:600,color:C.text}}>{title}</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.text}}>{title}</div>
                 <div style={{fontSize:12,color:C.muted,marginTop:3}}>
                   {r.reportDate} &nbsp;·&nbsp; Approved {r.approvedAt?r.approvedAt.slice(0,10):"—"}
                   {r.approvedBy?` · by ${r.approvedBy}`:""}
@@ -594,7 +595,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
                     <YAxis type="category" dataKey="productCategory" stroke={C.muted} tick={{fontSize:10}} width={95} />
                     <Tooltip {...getTT()} formatter={v=>[`${(+v).toFixed(1)}%`,"Return Rate"]} />
                     <Bar dataKey="return_rate_pct" radius={[0,4,4,0]} cursor="pointer">
-                      {data.cat_return_rate.map((r,i)=><Cell key={i} fill={r.productCategory===filterCategory?C.amber:C.teal} opacity={filterCategory&&r.productCategory!==filterCategory?0.35:1} />)}
+                      {data.cat_return_rate.map((r,i)=><Cell key={i} fill={C.blue} opacity={filterCategory&&r.productCategory!==filterCategory?0.35:1} />)}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -683,7 +684,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
                 <ResponsiveContainer width="100%" height={200}>
                   <PieChart onClick={e=>e?.activePayload&&setFilterIncType(prev=>prev===e.activePayload[0]?.payload?.incidentType?null:e.activePayload[0]?.payload?.incidentType)}>
                     <Pie data={data.incident_types||[]} dataKey="total_incidents" nameKey="incidentType" cx="50%" cy="50%" outerRadius={70} cursor="pointer" label={({name,percent})=>`${(name||"").replace(/_/g," ")} ${(percent*100).toFixed(0)}%`} labelLine={false} fontSize={9}>
-                      {(data.incident_types||[]).map((r,i)=><Cell key={i} fill={COLORS[i%COLORS.length]} opacity={filterIncType&&r.incidentType!==filterIncType?0.35:1} />)}
+                      {(data.incident_types||[]).map((r,i)=><Cell key={i} fill={C.blue} fillOpacity={[1,0.7,0.5,0.35,0.22,0.14][i%6]} opacity={filterIncType&&r.incidentType!==filterIncType?0.35:1} />)}
                     </Pie>
                     <Tooltip {...getTT()} formatter={(v,n)=>[fmt.num(v),(n||"").replace(/_/g," ")]} />
                   </PieChart>
@@ -697,7 +698,7 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
                 <ResponsiveContainer width="100%" height={200}>
                   <PieChart>
                     <Pie data={data.resolution_mix||[]} dataKey="total_incidents" nameKey="incidentResolution" cx="50%" cy="50%" outerRadius={70} label={({name,percent})=>`${(name||"").replace(/_/g," ")} ${(percent*100).toFixed(0)}%`} labelLine={false} fontSize={9}>
-                      {(data.resolution_mix||[]).map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]} />)}
+                      {(data.resolution_mix||[]).map((_,i)=><Cell key={i} fill={C.blue} fillOpacity={[1,0.7,0.5,0.35,0.22,0.14][i%6]} />)}
                     </Pie>
                     <Tooltip {...getTT()} formatter={(v,n)=>[fmt.num(v),(n||"").replace(/_/g," ")]} />
                   </PieChart>
@@ -816,7 +817,8 @@ function NewReport({onCreated}) {
   const [suppliers,setSuppliers] = useState([]);
   const [reportType,setReportType] = useState("adhoc_business");
   const [supplierID,setSupplierID] = useState("");
-  const [goal,setGoal]   = useState("");
+  const [goal,setGoal]         = useState("");
+  const [reportTitle,setReportTitle] = useState("");
   const [running,setRunning] = useState(false);
   const [runID,setRunID] = useState(null);
   const [runData,setRunData] = useState(null);
@@ -839,7 +841,7 @@ function NewReport({onCreated}) {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     setRunning(true); setError(null); setStatus("starting"); setRunData(null); setRunID(null); setStartTime(Date.now());
     try {
-      const res = await apiFetch("/api/runs",{method:"POST",body:JSON.stringify({reportType,supplierID:isSupplier?supplierID:null,goal})});
+      const res = await apiFetch("/api/runs",{method:"POST",body:JSON.stringify({reportType,supplierID:isSupplier?supplierID:null,goal,reportTitle:reportTitle.trim()||null})});
       const newRunID = res.runID;
       setRunID(newRunID); setStatus("running");
       const pollStart = Date.now();
@@ -895,6 +897,12 @@ function NewReport({onCreated}) {
           </div>
         )}
         <div>
+          <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Title <span style={{fontWeight:400,color:C.muted}}>(optional)</span></label>
+          <input value={reportTitle} onChange={e=>setReportTitle(e.target.value)} disabled={running}
+            placeholder="e.g. SUP004 Q1 2026 review"
+            style={{width:"100%",background:C.surface,border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"8px 12px",fontSize:13,fontFamily:"inherit",boxSizing:"border-box",opacity:running?0.5:1}}/>
+        </div>
+        <div>
           <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>Report goal</label>
           <textarea value={goal} onChange={e=>setGoal(e.target.value)} disabled={running} placeholder="Describe what you need, e.g. Analyse SUP002 incident trends last 6 months vs previous 6 months, broken down by category and SKU..." rows={4} style={{width:"100%",background:C.surface,border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"10px 12px",fontSize:13,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",opacity:running?0.5:1}} />
         </div>
@@ -910,7 +918,7 @@ function NewReport({onCreated}) {
       </Card>
       {isReady&&status&&IN_QUEUE.includes(status)&&!runData&&(
         <div style={{padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10,marginBottom:16}}>
-          <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>Report sent to review queue</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.amber,marginBottom:4}}>Report sent to review queue</div>
           <div style={{fontSize:12,color:C.muted}}>Confidence below auto-approve threshold. Find it in Recent Reports below.</div>
         </div>
       )}
@@ -918,11 +926,11 @@ function NewReport({onCreated}) {
         <div>
           {IN_QUEUE.includes(status)
             ? <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
-                <div style={{fontSize:14,fontWeight:600,color:C.amber,marginBottom:4}}>⚠ Low confidence — pending admin review</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.amber,marginBottom:4}}>⚠ Low confidence — pending admin review</div>
                 <div style={{fontSize:12,color:C.muted}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · You can read the report below. Sharing with supplier requires admin approval in the Queue tab.</div>
               </div>
             : <div style={{marginBottom:16,padding:"14px 18px",background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:10}}>
-                <div style={{fontSize:14,fontWeight:600,color:C.green,marginBottom:4}}>Report ready — review below</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.green,marginBottom:4}}>Report ready — review below</div>
                 <div style={{fontSize:12,color:C.green}}>Confidence: {((runData.confidence||0)*100).toFixed(0)}% · {runData.policyDecision?.replace(/_/g," ")}</div>
               </div>
           }
@@ -938,7 +946,7 @@ function NewReport({onCreated}) {
               <button onClick={()=>handleShare(false)} disabled={sharing} style={{padding:"16px",border:`1px solid ${C.border}`,borderRadius:8,background:C.surface,cursor:"pointer",textAlign:"left",transition:"all 0.15s"}}
                 onMouseEnter={e=>e.currentTarget.style.borderColor=C.blue}
                 onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
-                <div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:4}}>🔒 Internal only</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:4}}>🔒 Internal only</div>
                 <div style={{fontSize:12,color:C.muted}}>Save to control plane. Not visible to supplier.</div>
               </button>
               {isSupplier&&(
@@ -946,7 +954,7 @@ function NewReport({onCreated}) {
                   onClick={!IN_QUEUE.includes(status)?()=>handleShare(true):undefined}
                   onMouseEnter={e=>{ if(!IN_QUEUE.includes(status)) e.currentTarget.style.borderColor=C.teal; }}
                   onMouseLeave={e=>{ e.currentTarget.style.borderColor=C.border; }}>
-                  <div style={{fontSize:14,fontWeight:600,color:IN_QUEUE.includes(status)?C.muted:C.teal,marginBottom:4}}>🔗 Share with supplier</div>
+                  <div style={{fontSize:13,fontWeight:600,color:IN_QUEUE.includes(status)?C.muted:C.teal,marginBottom:4}}>🔗 Share with supplier</div>
                   <div style={{fontSize:12,color:C.muted}}>{IN_QUEUE.includes(status)?"Requires admin approval in Queue first.":"Appears in supplier's view alongside their standard dashboard."}</div>
                 </div>
               )}
@@ -995,7 +1003,16 @@ function RecentReports({refreshKey}) {
               <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4,flexWrap:"wrap"}}>
-                    <span style={{fontSize:13,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>
+                    <span style={{fontSize:13,fontWeight:600,color:C.text}}>
+                      {run.goal&&run.goal.startsWith("[")
+                        ? run.goal.slice(1,run.goal.indexOf("]"))
+                        : fmt.label(run.reportType)}
+                    </span>
+                    {(!run.goal||!run.goal.startsWith("["))&&run.goal&&(
+                      <span style={{fontSize:11,color:C.muted,fontStyle:"italic",maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {run.goal.length>50?run.goal.slice(0,50)+"...":run.goal}
+                      </span>
+                    )}
                     {run.supplierID&&<Badge>{run.supplierID}</Badge>}
                     <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${statusColor(ds)}18`,color:statusColor(ds),fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>{statusLabel(ds)}</span>
                   </div>
@@ -1146,7 +1163,7 @@ function AskQuestion() {
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flex:1,gap:24}}>
             <div style={{fontSize:32,opacity:0.3}}>💬</div>
             <div style={{textAlign:"center"}}>
-              <div style={{fontSize:15,color:C.muted,marginBottom:16}}>Ask anything about your supplier data</div>
+              <div style={{fontSize:13,color:C.muted,marginBottom:16}}>Ask anything about your supplier data</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center",maxWidth:600}}>
                 {examples.map((ex,i)=>(
                   <button key={i} onClick={()=>{ setQuestion(ex); inputRef.current?.focus(); }}
@@ -1163,7 +1180,7 @@ function AskQuestion() {
         {exchanges.map((ex, i) => (
           <div key={i} style={{display:"flex",flexDirection:"column",gap:8}}>
             <div style={{display:"flex",justifyContent:"flex-end"}}>
-              <div style={{background:"rgba(96,165,250,0.15)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:"12px 12px 4px 12px",padding:"10px 16px",maxWidth:"75%",fontSize:14,color:C.text,lineHeight:1.5}}>
+              <div style={{background:"rgba(96,165,250,0.15)",border:`1px solid rgba(96,165,250,0.25)`,borderRadius:"12px 12px 4px 12px",padding:"10px 16px",maxWidth:"75%",fontSize:13,color:C.text,lineHeight:1.5}}>
                 {ex.question}
               </div>
             </div>
@@ -1290,7 +1307,7 @@ function CustomerVoice({supplierID}) {
   if (loading) return <Spinner/>;
   if (error)   return <ErrMsg message={error}/>;
   if (!data?.skus?.length) return (
-    <div style={{textAlign:"center",padding:60,color:C.muted,fontSize:14}}>
+    <div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>
       No Customer Voice data available yet. Data is generated monthly by the Comment Intelligence agent.
     </div>
   );
@@ -1323,10 +1340,10 @@ function CustomerVoice({supplierID}) {
             <div key={sku.productSKU} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
               <div onClick={()=>setExpandedSKU(isOpen?null:i)} style={{padding:"16px 20px",cursor:"pointer"}}>
                 <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8,flexWrap:"wrap"}}>
-                  <span style={{fontSize:15,fontWeight:700,color:C.blue,fontFamily:"monospace"}}>{sku.productSKU}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:C.blue,fontFamily:"monospace"}}>{sku.productSKU}</span>
                   <Badge>{sku.productCategory}</Badge>
                   <span style={{fontSize:11,color:C.muted}}>{sku.totalOrders} orders · {sku.incidentCommentCount} incident comments · {sku.returnCommentCount} return comments</span>
-                  <span style={{marginLeft:"auto",color:C.muted,fontSize:14}}>{isOpen?"▲":"▼"}</span>
+                  <span style={{marginLeft:"auto",color:C.muted,fontSize:13}}>{isOpen?"▲":"▼"}</span>
                 </div>
                 <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1453,7 +1470,7 @@ function RunQueue({onSelect}) {
           <div key={run.runID} onClick={()=>onSelect(run)} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"18px 22px",cursor:"pointer",transition:"all 0.15s",display:"grid",gridTemplateColumns:"1fr auto",gap:16,alignItems:"center"}} onMouseEnter={e=>e.currentTarget.style.background=C.surface} onMouseLeave={e=>e.currentTarget.style.background=C.surface}>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <span style={{fontSize:15,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>
+                <span style={{fontSize:13,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>
                 <Badge variant={run.audience}>{run.audience}</Badge>
                 {run.supplierID&&<Badge>{run.supplierID}</Badge>}
                 <Badge variant="pending">Pending</Badge>
@@ -1464,12 +1481,12 @@ function RunQueue({onSelect}) {
                 <span style={{fontSize:12,color:C.muted}}>{run.validationPassed}/{(run.validationPassed||0)+(run.validationFailed||0)} checks</span>
                 <span style={{fontSize:12,color:C.muted}}>{run.queuedAt?new Date(run.queuedAt).toLocaleString("en-GB"):""}</span>
               </div>
-              {run.softFailures?.length>0&&<div style={{fontSize:12,color:C.amber}}>⚠ {run.softFailures.join(" · ")}</div>}
+              {run.softFailures?.length>0&&<div style={{fontSize:12,color:C.muted}}>⚠ {run.softFailures.join(", ")}</div>}
             </div>
             <div style={{color:C.muted,fontSize:13}}>Review →</div>
           </div>
         ))}
-        {!error&&runs.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:14}}>No pending reports.</div>}
+        {!error&&runs.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No pending reports.</div>}
       </div>
     </div>
   );
@@ -1618,7 +1635,7 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
                 </div>
                 {(run?.validationResults||[]).map((r,i)=>(
                   <div key={i} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 14px",background:r.passed?"rgba(34,197,94,0.05)":"rgba(239,68,68,0.05)",border:`1px solid ${r.passed?"rgba(34,197,94,0.15)":"rgba(239,68,68,0.15)"}`,borderRadius:6}}>
-                    <span style={{color:r.passed?C.green:C.red,fontSize:14}}>{r.passed?"✓":"✗"}</span>
+                    <span style={{color:r.passed?C.green:C.red,fontSize:13}}>{r.passed?"✓":"✗"}</span>
                     <div style={{flex:1}}>
                       <div style={{fontSize:12,fontWeight:600,color:C.text,fontFamily:"monospace"}}>{r.metricName}</div>
                       {r.expectedValue!=null&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>Expected: <span style={{color:C.muted}}>{(+r.expectedValue).toLocaleString()}</span> · Reported: <span style={{color:C.muted}}>{(+r.reportedValue).toLocaleString()}</span>{r.deviationPct!=null&&<> · Dev: <span style={{color:r.deviationPct>10?C.red:C.green}}>{(+r.deviationPct).toFixed(1)}%</span></>}</div>}
@@ -1716,7 +1733,7 @@ function Observability() {
             <span style={{fontSize:11,fontFamily:"monospace",color:C.muted}}>{(run.runID||"").slice(0,8)}</span>
           </div>
         ))}
-        {!error&&history.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:14}}>No run history yet.</div>}
+        {!error&&history.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No run history yet.</div>}
       </div>
     </div>
   );
@@ -1827,9 +1844,9 @@ function LandingPage({ onSignIn, onDemoLogin }) {
 
   const LI = "https://www.linkedin.com/in/franciscotrindade";
   const S = { // shared text styles
-    body:   { fontSize:14, color:"#475569", lineHeight:1.7 },
+    body:   { fontSize:13, color:"#475569", lineHeight:1.7 },
     label:  { fontSize:11, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.08em" },
-    title:  { fontSize:15, fontWeight:700, color:"#0f172a" },
+    title:  { fontSize:13, fontWeight:700, color:"#0f172a" },
     card:   { background:"#f8fafc", borderRadius:12, border:"1px solid #e2e8f0", padding:"20px 24px" },
   };
 
@@ -1837,7 +1854,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
     <div style={{minHeight:"100vh", background:"#f8fafc", fontFamily:"'DM Sans','Helvetica Neue',sans-serif", color:"#0f172a"}}>
 
       <nav style={{position:"sticky",top:0,zIndex:100,background:"rgba(248,250,252,0.95)",backdropFilter:"blur(12px)",borderBottom:"1px solid #e2e8f0",padding:"0 32px",display:"flex",alignItems:"center",height:56}}>
-        <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.02em"}}>Agentic <span style={{color:"#2563eb"}}>Intel</span></div>
+        <div style={{fontSize:13,fontWeight:700,letterSpacing:"-0.02em"}}>Agentic <span style={{color:"#2563eb"}}>Intel</span></div>
         <div style={{marginLeft:"auto",display:"flex",gap:24,alignItems:"center"}}>
           <a href="#how-it-works" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>How it works</a>
           <a href="#tech" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>Tech stack</a>
@@ -1868,11 +1885,11 @@ function LandingPage({ onSignIn, onDemoLogin }) {
             If you are looking for someone that brings business, operations and AI knowledge, let's connect.
           </p>
           <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:8,padding:"12px 24px",fontSize:14,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
+            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:8,padding:"12px 24px",fontSize:13,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
               Get in touch
             </a>
-            <button onClick={onDemoLogin} style={{background:"#fff",color:"#0f172a",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 24px",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+            <button onClick={onDemoLogin} style={{background:"#fff",color:"#0f172a",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 24px",fontSize:13,fontWeight:600,cursor:"pointer"}}>
               Explore the live system
             </button>
           </div>
@@ -2013,7 +2030,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
               <div style={{padding:"20px 28px",borderBottom:"1px solid #f1f5f9",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                 <div>
                   <div style={{...S.label, marginBottom:4}}>AI-generated report</div>
-                  <div style={{...S.title, fontSize:15}}>{demoReport.title}</div>
+                  <div style={{...S.title, fontSize:13}}>{demoReport.title}</div>
                 </div>
                 <div style={{background:demoReport.confidence>=90?"#f0fdf4":"#fffbeb",border:"1px solid "+(demoReport.confidence>=90?"#bbf7d0":"#fef08a"),borderRadius:20,padding:"4px 12px",fontSize:12,fontWeight:700,color:demoReport.confidence>=90?"#16a34a":"#ca8a04"}}>
                   {demoReport.confidence}% confidence
@@ -2046,7 +2063,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
           )}
 
           {!demoKey && (
-            <div style={{background:"#fff",borderRadius:16,border:"2px dashed #e2e8f0",padding:"48px 32px",textAlign:"center",color:"#94a3b8",fontSize:14}}>
+            <div style={{background:"#fff",borderRadius:16,border:"2px dashed #e2e8f0",padding:"48px 32px",textAlign:"center",color:"#94a3b8",fontSize:13}}>
               Select a report type above to see a sample output.
             </div>
           )}
@@ -2105,15 +2122,15 @@ function LandingPage({ onSignIn, onDemoLogin }) {
       <section style={{background:"#0f172a",padding:"80px 32px",textAlign:"center"}}>
         <div style={{maxWidth:580,margin:"0 auto"}}>
           <h2 style={{fontSize:30,fontWeight:800,color:"#fff",letterSpacing:"-0.02em",margin:"0 0 16px"}}>Open to new opportunities</h2>
-          <p style={{fontSize:15,color:"#94a3b8",margin:"0 0 32px",lineHeight:1.75}}>
+          <p style={{fontSize:13,color:"#94a3b8",margin:"0 0 32px",lineHeight:1.75}}>
             Background in business, data, and operations with a focus on building things that actually get used. This project sits at the intersection of business intelligence, AI engineering and security. If that is a combination you are looking for, let's connect.
           </p>
           <div style={{display:"flex",gap:16,justifyContent:"center",flexWrap:"wrap"}}>
-            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:10,padding:"14px 28px",fontSize:14,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
+            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:10,padding:"14px 28px",fontSize:13,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
               Message on LinkedIn
             </a>
-            <button onClick={onDemoLogin} style={{background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"14px 28px",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+            <button onClick={onDemoLogin} style={{background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"14px 28px",fontSize:13,fontWeight:600,cursor:"pointer"}}>
               Explore with demo account
             </button>
           </div>
@@ -2199,6 +2216,7 @@ export default function App() {
   const [queueCount,setQueueCount] = useState(null);
   const [decisions,setDecisions]   = useState({});
   const [dashTab,setDashTab]       = useState("business");
+  const [controlTab,setControlTab] = useState("queue");
   const [theme,setTheme]           = useState("light");
   const [showLanding,setShowLanding]     = useState(true);
   const [demoAutoLogin,setDemoAutoLogin] = useState(false);
@@ -2214,7 +2232,7 @@ export default function App() {
         setSupplierID(claims.supplierID || null);
         if (claims.role === "supplier") setView("supplier_dashboard");
         else if (claims.role === "business") setView("dashboards");
-        else setView("queue");
+        else setView("dashboards");
       } else { setAuthUser(null); setUserRole(null); setSupplierID(null); }
     });
     return () => unsub();
@@ -2258,7 +2276,7 @@ export default function App() {
     return (
       <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
         <div style={{borderBottom:`1px solid ${C.border}`,padding:"0 28px",display:"flex",alignItems:"center",height:52,background:C.surface}}>
-          <div style={{fontSize:14,fontWeight:700,color:C.text,letterSpacing:"-0.02em"}}>Agentic <span style={{color:C.teal}}>Intel</span></div>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:"-0.02em"}}>Agentic <span style={{color:C.teal}}>Intel</span></div>
           <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:16}}>
             <span style={{fontSize:12,color:C.muted}}>{authUser.email}</span>
             <button onClick={toggleTheme} style={{background:"none",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>{theme==="dark"?"☀️ Light":"🌙 Dark"}</button>
@@ -2273,11 +2291,10 @@ export default function App() {
   }
 
   const allNav = [
-    {id:"queue",         label:"Queue",         badge:queueCount, adminOnly:true,  demoOk:true},
-    {id:"dashboards",    label:"Dashboards",    adminOnly:false,                   demoOk:true},
-    {id:"new_report",    label:"New Report",    adminOnly:false,                   demoOk:false},
-    {id:"ask",           label:"Ask",           adminOnly:false,                   demoOk:true},
-    {id:"observability", label:"Observability", adminOnly:true,                    demoOk:true},
+    {id:"dashboards",     label:"Dashboards",     adminOnly:false, demoOk:true,  group:"main"},
+    {id:"ask",            label:"Ask",            adminOnly:false, demoOk:true,  group:"main"},
+    {id:"new_report",     label:"New Report",     adminOnly:false, demoOk:false, group:"main"},
+    {id:"control_plane",  label:"Control Plane",  badge:queueCount, adminOnly:true, demoOk:true, group:"control"},
   ];
   const nav = allNav.filter(item => {
     if (isDemo) return item.demoOk;
@@ -2288,16 +2305,21 @@ export default function App() {
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
       <div style={{borderBottom:`1px solid ${C.border}`,padding:"0 28px",display:"flex",alignItems:"center",gap:0,height:52,background:C.surface,position:"sticky",top:0,zIndex:100}}>
-        <div style={{fontSize:14,fontWeight:700,color:C.text,letterSpacing:"-0.02em",marginRight:32}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:"-0.02em",marginRight:32}}>
           Agentic <span style={{color:C.blue}}>Intel</span>
           {userRole==="business"&&<span style={{fontSize:10,color:C.muted,fontWeight:400,marginLeft:8,textTransform:"uppercase",letterSpacing:"0.08em"}}>read only</span>}
           {isDemo&&<span style={{fontSize:10,color:C.amber,fontWeight:400,marginLeft:8,textTransform:"uppercase",letterSpacing:"0.08em"}}>demo</span>}
         </div>
-        {nav.map(item=>(
-          <button key={item.id} onClick={()=>{ setView(item.id); setSelected(null); }} style={{background:"none",border:"none",borderBottom:view===item.id?`2px solid ${C.blue}`:"2px solid transparent",color:view===item.id?C.blue:C.muted,padding:"0 16px",height:"100%",cursor:"pointer",fontSize:13,fontWeight:view===item.id?600:400,display:"flex",alignItems:"center",gap:8,transition:"all 0.15s"}}>
-            {item.label}
-            {item.badge!=null&&<span style={{background:C.blue,color:"#fff",borderRadius:"10px",padding:"1px 7px",fontSize:11,fontWeight:700}}>{item.badge}</span>}
-          </button>
+        {nav.map((item,i)=>(
+          <Fragment key={item.id}>
+            {i>0 && nav[i-1].group!==item.group && (
+              <div style={{width:1,height:20,background:C.border,margin:"0 8px",alignSelf:"center"}}/>
+            )}
+            <button onClick={()=>{ setView(item.id); setSelected(null); }} style={{background:"none",border:"none",borderBottom:view===item.id?`2px solid ${C.blue}`:"2px solid transparent",color:view===item.id?C.blue:C.muted,padding:"0 16px",height:"100%",cursor:"pointer",fontSize:13,fontWeight:view===item.id?600:400,display:"flex",alignItems:"center",gap:8,transition:"all 0.15s"}}>
+              {item.label}
+              {item.badge!=null&&<span style={{background:C.blue,color:"#fff",borderRadius:"10px",padding:"1px 7px",fontSize:11,fontWeight:700}}>{item.badge}</span>}
+            </button>
+          </Fragment>
         ))}
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:16}}>
           <span style={{fontSize:12,color:C.muted}}>{new Date().toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</span>
@@ -2307,8 +2329,20 @@ export default function App() {
         </div>
       </div>
       <div style={{padding:"28px",maxWidth:1300,margin:"0 auto"}}>
-        {view==="queue"&&!selected&&<RunQueue onSelect={run=>{ setSelected(run); setView("audit"); }}/>}
-        {view==="audit"&&selected&&<AuditView runSummary={selected} isDemo={isDemo} onDecision={dec=>{ setDecisions(p=>({...p,[dec.runID]:dec})); }} onBack={()=>{ setSelected(null); setView("queue"); }}/>}
+        {view==="control_plane"&&!selected&&(
+          <div>
+            <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
+              {[{id:"queue",label:"Queue"},{id:"observability",label:"Observability"}].map(t=>(
+                <button key={t.id} onClick={()=>setControlTab(t.id)} style={{background:"none",border:"none",borderBottom:controlTab===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:controlTab===t.id?C.blue:C.muted,padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:controlTab===t.id?600:400}}>
+                  {t.label}{t.id==="queue"&&queueCount!=null&&<span style={{marginLeft:6,background:C.blue,color:"#fff",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{queueCount}</span>}
+                </button>
+              ))}
+            </div>
+            {controlTab==="queue"&&<RunQueue onSelect={run=>{ setSelected(run); setView("audit"); }}/>}
+            {controlTab==="observability"&&<Observability/>}
+          </div>
+        )}
+        {view==="audit"&&selected&&<AuditView runSummary={selected} isDemo={isDemo} onDecision={dec=>{ setDecisions(p=>({...p,[dec.runID]:dec})); }} onBack={()=>{ setSelected(null); setView("control_plane"); setControlTab("queue"); }}/>}
         {view==="dashboards"&&(
           <div>
             <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
