@@ -1723,11 +1723,429 @@ function Observability() {
 }
 
 // ── Login Page ────────────────────────────────────────────────────────────────
-function LoginPage() {
-  const [email,setEmail]       = useState("");
-  const [password,setPassword] = useState("");
+// ── Landing Page ──────────────────────────────────────────────────────────────
+function LandingPage({ onSignIn, onDemoLogin }) {
+  const [demoKey, setDemoKey] = useState(null);
+  const [demoReport, setDemoReport] = useState(null);
+
+  const STEPS = [
+    { icon:"🎯", title:"You ask a question", color:"#2563eb",
+      desc:"Type a plain-English question, no SQL or technical knowledge needed. For example: Show me SUP004 sales in 2026 vs the same period last year." },
+    { icon:"🤖", title:"Six AI agents take over", color:"#2563eb",
+      desc:"Six specialised agents each handle one job in sequence. Discover picks the right data tables, Pull writes and runs the database query, Analyse scores the findings, Generate writes the report, Validate fact-checks it, and Review applies policy rules." },
+    { icon:"⚙️", title:"SQL is written and self-corrected", color:"#2563eb",
+      desc:"The Pull agent writes precise SQL for BigQuery. If the query fails, it reads the exact error, corrects the SQL automatically, and retries up to 2 times before escalating." },
+    { icon:"📊", title:"Three ways a report reaches you", color:"#2563eb",
+      desc:"Scheduled reports auto-publish if confidence is high. Ad-hoc reports with high confidence skip the queue. Low-confidence or complex reports route to a human reviewer first." },
+    { icon:"🧠", title:"Customer Voice, beyond the numbers", color:"#2563eb",
+      desc:"A separate agent reads customer comments and groups them into themes: what went wrong, why items were returned, what customers asked for. This feeds directly into supplier account reports." },
+    { icon:"👤", title:"Human-in-the-loop review", color:"#2563eb",
+      desc:"Every report that needs review goes to a queue. The reviewer can approve, edit, or reject with a reason. If rejected, the agent re-runs with the correction applied automatically." },
+  ];
+
+  const TECH = [
+    { name:"LangGraph",     color:"#2563eb", role:"Agent pipeline orchestration",
+      desc:"Manages the six-agent pipeline as a stateful graph. Each node passes context to the next and handles retries, state persistence, and branching logic." },
+    { name:"Claude Sonnet 4", color:"#2563eb", role:"AI reasoning engine",
+      desc:"Anthropic's Claude powers every agent node that requires reasoning: writing SQL, interpreting data, scoring confidence, generating report narratives, and self-correcting errors." },
+    { name:"BigQuery",      color:"#2563eb", role:"Data warehouse",
+      desc:"Google's cloud database holds all order, incident, return, and supplier data. The Pull agent generates and executes SQL directly against BigQuery." },
+    { name:"FastAPI",       color:"#2563eb", role:"Backend API",
+      desc:"Python API connecting the agent pipeline, BigQuery, Firebase, and the React frontend. Handles auth, human decisions, report delivery, and the rejection feedback loop." },
+    { name:"Firebase Auth", color:"#2563eb", role:"Authentication and roles",
+      desc:"Manages login and role-based access. Admin, business, demo, and supplier roles each see a different view, enforced in both the UI and every API endpoint." },
+    { name:"Cloud Run",     color:"#2563eb", role:"Serverless deployment",
+      desc:"The entire system runs as a containerised service on Google Cloud. Scales automatically with zero infrastructure management." },
+  ];
+
+  const DEMOS = [
+    { label:"Weekly dashboard", icon:"📈" },
+    { label:"Sales comparison", icon:"📊" },
+    { label:"Customer Voice",   icon:"💬" },
+    { label:"Spike alert",      icon:"🚨" },
+  ];
+
+  const OUTPUTS = {
+    "Sales comparison": {
+      title:"SUP004: Sales and Quality, Jan to Apr 2026 vs Jan to Apr 2025",
+      confidence:91, autoPublish:true,
+      summary:"CoreTech Industries (SUP004) delivered 4.47M euros gross revenue across 19,354 orders in Jan to Apr 2026, up 6.2% versus 4.21M euros across 18,102 orders in the same period in 2025. Revenue growth is entirely volume-driven. Average order value held flat at 230 euros. The incident rate has deteriorated from 9.97% to 10.31% annualised.",
+      metrics:[
+        { label:"2026 Revenue (YTD)", value:"€4.47M",  change:"+6.2% vs 2025",    up:true  },
+        { label:"2026 Orders (YTD)", value:"19,354",   change:"+6.9% vs 2025",    up:true  },
+        { label:"Incident Rate 2026", value:"10.31%",  change:"+0.34pp vs 2025",  up:false },
+        { label:"Avg Order Value",    value:"€230.73", change:"Flat vs 2025",      up:null  },
+      ],
+      sections:[
+        { title:"Revenue trend", body:"Month-by-month comparison shows consistent volume growth in Jan and Feb (+8.1%, +7.4%), slowing in Mar (+4.2%) and Apr (+5.3%). Growth is broad-based with no single month distorting the picture." },
+        { title:"Quality deterioration", body:"The incident rate increase represents an additional 65 incidents at current order volumes. At an average resolution cost of 18.40 euros per incident, this is an estimated 1,196 euros additional annual cost if the trend continues." },
+        { title:"Recommendation", body:"Trigger a quality review with CoreTech Industries focused on the incident rate increase. Revenue growth is positive but does not offset quality deterioration at this trajectory." },
+      ],
+      finding:"Revenue growth is real but quality is heading in the wrong direction. Both need to be on the agenda in the next supplier review.",
+    },
+    "Customer Voice": {
+      title:"Customer Voice Intelligence: SUP004 Sports and Outdoors",
+      confidence:95, autoPublish:true,
+      summary:"Analysis of 847 customer comments for CoreTech Industries (SUP004) reveals three structural product issues driving returns and incidents. Sizing and description accuracy account for 61% of all negative comment themes. Two SKUs, SPT-0041 and SPT-0087, are responsible for 34% of all flagged comments despite representing only 8% of order volume.",
+      metrics:[
+        { label:"Comments analysed",    value:"847",     change:"Last 90 days",         up:null  },
+        { label:"Flagged SKUs",          value:"6 of 43", change:"Require action",       up:false },
+        { label:"Top issue",             value:"Sizing",  change:"38% of complaints",    up:false },
+        { label:"Avg rating (flagged)",  value:"2.4 / 5", change:"vs 3.9 portfolio avg", up:false },
+      ],
+      sections:[
+        { title:"Root cause 1: Sizing inaccuracy (38%)", body:"SPT-0041 (hiking boots) and SPT-0087 (compression shorts) generate the majority of sizing complaints. Customers consistently report products running 1 to 1.5 sizes small. 73% of returns for these SKUs cite sizing as the reason." },
+        { title:"Root cause 2: Description mismatch (23%)", body:"Product descriptions for 3 outdoor furniture SKUs do not reflect actual dimensions. Customers report items arriving significantly smaller than listed. This is a listing accuracy issue, not a manufacturing defect." },
+        { title:"Improvement actions", body:"1. Add size guide to SPT-0041 and SPT-0087 listings immediately. 2. Audit outdoor furniture dimension listings against physical specs. 3. Request CoreTech to update product photography for the 3 flagged SKUs." },
+      ],
+      finding:"Two SKUs are disproportionately damaging customer satisfaction. Fixing their size guidance alone is estimated to reduce the return rate from 14.2% to under 6%.",
+    },
+    "Spike alert": {
+      title:"Incident Rate Spike: Electronics Portfolio",
+      confidence:88, autoPublish:false,
+      summary:"An automated spike alert: the Electronics category incident rate reached 14.7% in the last 7 days, up from a 30-day average of 11.2%, a 3.5 percentage point increase. Concentrated in the budget tier across the supplier direct channel. Two suppliers account for 81% of the spike volume.",
+      metrics:[
+        { label:"Current rate (7-day)", value:"14.7%",          change:"+3.5pp vs 30-day avg", up:false },
+        { label:"Affected orders",      value:"1,847",           change:"In spike window",      up:null  },
+        { label:"Primary channel",      value:"supplier direct", change:"Budget tier",          up:false },
+        { label:"Spike severity",       value:"High",            change:"Auto-escalated",       up:false },
+      ],
+      sections:[
+        { title:"Affected suppliers", body:"SUP002 (Horizon Global Goods) accounts for 54% of spike incidents, 998 incidents on 6,790 orders. SUP004 (CoreTech Industries) accounts for 27%, 499 incidents on 3,441 orders. Both are in the supplier direct budget channel." },
+        { title:"Incident type breakdown", body:"Damage and defect incidents increased 89% week-on-week. Missing parts increased 34%. Late delivery is flat, pointing to a packaging or handling issue at dispatch rather than a logistics problem." },
+        { title:"Recommended actions", body:"1. Contact SUP002 and SUP004 for immediate root cause explanation. 2. Temporarily pause new supplier direct budget Electronics orders. 3. Review last 48 hours of dispatch records for both suppliers." },
+      ],
+      finding:"This spike has the pattern of a packaging change or a new batch of defective product entering the supply chain. It needs a same-day response.",
+    },
+  };
+
+  const handleDemo = (label) => {
+    if (demoKey === label) return;
+    setDemoKey(label);
+    setDemoReport(OUTPUTS[label] || null);
+  };
+
+  const LI = "https://www.linkedin.com/in/franciscotrindade";
+  const S = { // shared text styles
+    body:   { fontSize:14, color:"#475569", lineHeight:1.7 },
+    label:  { fontSize:11, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.08em" },
+    title:  { fontSize:15, fontWeight:700, color:"#0f172a" },
+    card:   { background:"#f8fafc", borderRadius:12, border:"1px solid #e2e8f0", padding:"20px 24px" },
+  };
+
+  return (
+    <div style={{minHeight:"100vh", background:"#f8fafc", fontFamily:"'DM Sans','Helvetica Neue',sans-serif", color:"#0f172a"}}>
+
+      <nav style={{position:"sticky",top:0,zIndex:100,background:"rgba(248,250,252,0.95)",backdropFilter:"blur(12px)",borderBottom:"1px solid #e2e8f0",padding:"0 32px",display:"flex",alignItems:"center",height:56}}>
+        <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.02em"}}>Agentic <span style={{color:"#2563eb"}}>Intel</span></div>
+        <div style={{marginLeft:"auto",display:"flex",gap:24,alignItems:"center"}}>
+          <a href="#how-it-works" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>How it works</a>
+          <a href="#tech" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>Tech stack</a>
+          <a href="#demo" style={{fontSize:13,color:"#64748b",textDecoration:"none"}}>See outputs</a>
+          <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:7,padding:"7px 16px",fontSize:13,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6}}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+            LinkedIn
+          </a>
+          <button onClick={onSignIn} style={{background:"#fff",color:"#0f172a",border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 18px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Login</button>
+        </div>
+      </nav>
+
+      <section style={{maxWidth:1100,margin:"0 auto",padding:"80px 32px 60px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:64,alignItems:"center"}}>
+        <div>
+          <div style={{display:"inline-flex",alignItems:"center",gap:8,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:20,padding:"4px 14px",fontSize:12,color:"#2563eb",fontWeight:600,marginBottom:24}}>
+            Multi-agent AI system, built end-to-end
+          </div>
+          <h1 style={{fontSize:44,fontWeight:800,lineHeight:1.1,letterSpacing:"-0.03em",margin:"0 0 24px",color:"#0f172a"}}>
+            Six AI agents.<br/><span style={{color:"#2563eb"}}>One intelligence</span><br/>platform.
+          </h1>
+          <p style={{...S.body, margin:"0 0 12px", maxWidth:480}}>
+            A portfolio project demonstrating what is possible with modern AI agent frameworks. A fully working supplier intelligence platform, from data warehouse to agent pipeline to human review queue to supplier portal.
+          </p>
+          <p style={{...S.body, margin:"0 0 12px", maxWidth:480}}>
+            Ask a question in plain English. Six AI agents query the data, analyse the results, write a structured report, and route it for human review, all automatically.
+          </p>
+          <p style={{...S.body, margin:"0 0 32px", maxWidth:480, color:"#2563eb", fontWeight:500}}>
+            If you are looking for someone that brings business, operations and AI knowledge, let's connect.
+          </p>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:8,padding:"12px 24px",fontSize:14,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+              Get in touch
+            </a>
+            <button onClick={onDemoLogin} style={{background:"#fff",color:"#0f172a",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 24px",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+              Explore the live system
+            </button>
+          </div>
+        </div>
+        <div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 24px rgba(0,0,0,0.06)",padding:28}}>
+          <div style={{...S.label, marginBottom:16}}>Live agent run, 6 specialised agents</div>
+          {[
+            {label:"Discover", desc:"Selects data tables",               done:true,  pending:false},
+            {label:"Pull",     desc:"Writes and runs SQL query",         done:true,  pending:false},
+            {label:"Analyse",  desc:"Scores findings, 91% confidence",  done:true,  pending:false},
+            {label:"Generate", desc:"Writes report narrative",           done:true,  pending:false},
+            {label:"Validate", desc:"Fact-checks against source data",   done:true,  pending:false},
+            {label:"Review",   desc:"Policy check, routing to queue",    done:false, pending:true },
+          ].map((s,i)=>(
+            <div key={s.label} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0",borderBottom:i<5?"1px solid #f1f5f9":"none"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:s.pending?"#fffbeb":s.done?"#f0fdf4":"#f8fafc",border:"1px solid "+(s.pending?"#fef08a":s.done?"#bbf7d0":"#e2e8f0"),display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:s.pending?"#ca8a04":s.done?"#16a34a":"#94a3b8"}}>
+                {s.done&&!s.pending?"✓":i+1}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#0f172a"}}>{s.label}</div>
+                <div style={{fontSize:12,color:"#94a3b8"}}>{s.desc}</div>
+              </div>
+              <div style={{fontSize:11,fontWeight:600,color:s.pending?"#ca8a04":s.done?"#16a34a":"#94a3b8"}}>{s.pending?"pending":s.done?"done":"."}</div>
+            </div>
+          ))}
+          <div style={{marginTop:16,padding:"10px 14px",background:"#fffbeb",borderRadius:8,border:"1px solid #fef08a",fontSize:13,color:"#92400e"}}>
+            Awaiting human review before publishing.
+          </div>
+        </div>
+      </section>
+
+      <section id="how-it-works" style={{background:"#fff",borderTop:"1px solid #e2e8f0",borderBottom:"1px solid #e2e8f0",padding:"80px 32px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto"}}>
+          <div style={{textAlign:"center",marginBottom:48}}>
+            <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>How it works</h2>
+            <p style={{...S.body, maxWidth:520, margin:"0 auto"}}>Six specialised agents. Three ways a report reaches you. One human decision gate.</p>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:40,padding:"20px 24px",background:"#f8fafc",borderRadius:12,border:"1px solid #e2e8f0"}}>
+            {[
+              {icon:"📅",title:"Scheduled reports",        desc:"Weekly and monthly reports run automatically. High-confidence results publish without any human action."},
+              {icon:"💬",title:"Ad-hoc questions/reports", desc:"Type any question. High-confidence results go straight through. Lower confidence routes to the human review queue."},
+              {icon:"🚨",title:"Spike alerts",             desc:"The system monitors key metrics. When an incident or return rate spikes beyond thresholds, an alert report is generated automatically."},
+            ].map(t=>(
+              <div key={t.title} style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+                <span style={{fontSize:20,marginTop:2}}>{t.icon}</span>
+                <div>
+                  <div style={{...S.title, marginBottom:4}}>{t.title}</div>
+                  <div style={{...S.body}}>{t.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+            {STEPS.map((s,i)=>(
+              <div key={i} style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:12,padding:"20px"}}>
+                <div style={{fontSize:24,marginBottom:10}}>{s.icon}</div>
+                <div style={{...S.label, marginBottom:6}}>Step {i+1}</div>
+                <div style={{...S.title, marginBottom:8}}>{s.title}</div>
+                <div style={{...S.body}}>{s.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="demo" style={{padding:"80px 32px",background:"#f8fafc"}}>
+        <div style={{maxWidth:960,margin:"0 auto"}}>
+          <div style={{textAlign:"center",marginBottom:48}}>
+            <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>Sample outputs</h2>
+            <p style={{...S.body, maxWidth:480, margin:"0 auto"}}>Four different types of intelligence the system produces. Real structure from the live system.</p>
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"center",marginBottom:28}}>
+            {DEMOS.map(p=>(
+              <button key={p.label} onClick={()=>handleDemo(p.label)} style={{background:demoKey===p.label?"#eff6ff":"#fff",border:"1px solid "+(demoKey===p.label?"#bfdbfe":"#e2e8f0"),borderRadius:8,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:"pointer",color:demoKey===p.label?"#2563eb":"#475569",display:"flex",alignItems:"center",gap:7,transition:"all 0.15s"}}>
+                {p.icon} {p.label}
+              </button>
+            ))}
+          </div>
+
+          {demoKey==="Weekly dashboard" && (
+            <div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 24px rgba(0,0,0,0.06)",overflow:"hidden"}}>
+              <div style={{padding:"16px 24px",borderBottom:"1px solid #f1f5f9",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{...S.title}}>Business Overview, Weekly Dashboard</div>
+                <div style={{...S.label}}>Auto-published, Mon 28 Apr 2026</div>
+              </div>
+              <div style={{padding:"16px 24px",background:"#fff7ed",borderBottom:"1px solid #fed7aa",display:"flex",gap:12,alignItems:"flex-start"}}>
+                <span style={{fontSize:16,marginTop:2}}>🚨</span>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#9a3412",marginBottom:4}}>Weekly digest: 1 critical alert, 2 watch items</div>
+                  <div style={{fontSize:13,color:"#92400e",lineHeight:1.6}}>Electronics incident rate spiked 89% week-on-week in the budget supplier direct channel. SUP002 and SUP004 are the primary drivers. Temporary hold on new orders recommended pending root cause confirmation. Home and Garden returns are elevated at 8.3%, return-cause capture has been requested from the supplier.</div>
+                </div>
+              </div>
+              <div style={{padding:"16px 24px",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,borderBottom:"1px solid #f1f5f9"}}>
+                {[
+                  {label:"Total Orders",    value:"21,839", sub:"+4.2% vs last week",  good:true },
+                  {label:"Gross Revenue",   value:"€4.97M", sub:"+3.8% vs last week",  good:true },
+                  {label:"Incident Rate",   value:"11.02%", sub:"+0.4pp vs last week", good:false},
+                  {label:"Return Rate",     value:"6.43%",  sub:"+0.1pp vs last week", good:false},
+                  {label:"Resolution Cost", value:"€38.4K", sub:"2.2% of revenue",     good:null },
+                  {label:"Active Alerts",   value:"3",      sub:"1 critical",           good:false},
+                  {label:"Suppliers OK",    value:"5 of 7", sub:"2 require action",    good:null },
+                  {label:"Published",       value:"Auto",   sub:"93% confidence",       good:true },
+                ].map((m,i)=>(
+                  <div key={i} style={{background:"#f8fafc",borderRadius:8,padding:"12px 14px"}}>
+                    <div style={{...S.label, marginBottom:4}}>{m.label}</div>
+                    <div style={{fontSize:17,fontWeight:800,color:m.good===null?"#0f172a":m.good?"#16a34a":"#dc2626",marginBottom:2}}>{m.value}</div>
+                    <div style={{fontSize:11,color:"#94a3b8"}}>{m.sub}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{padding:"16px 24px",borderBottom:"1px solid #f1f5f9"}}>
+                <div style={{...S.label, marginBottom:12}}>Supplier incident rate this week</div>
+                {[
+                  {name:"SUP002 Horizon Global",  rate:13.4, bad:true },
+                  {name:"SUP004 CoreTech",         rate:11.8, bad:true },
+                  {name:"SUP001 Apex Mfg",         rate:10.2, bad:null },
+                  {name:"SUP006 Meridian",         rate:9.8,  bad:null },
+                  {name:"SUP003 Summit Supply",    rate:8.1,  bad:false},
+                ].map((s,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                    <div style={{fontSize:12,color:"#475569",width:160,flexShrink:0}}>{s.name}</div>
+                    <div style={{flex:1,background:"#f1f5f9",borderRadius:4,height:7,overflow:"hidden"}}>
+                      <div style={{width:s.rate*5+"%",height:"100%",background:s.bad===true?"#dc2626":s.bad===false?"#16a34a":"#d97706",borderRadius:4}}/>
+                    </div>
+                    <div style={{fontSize:12,fontWeight:700,color:s.bad===true?"#dc2626":s.bad===false?"#16a34a":"#d97706",width:38,textAlign:"right"}}>{s.rate}%</div>
+                  </div>
+                ))}
+                <div style={{marginTop:10,fontSize:12,color:"#94a3b8"}}>Portfolio average: 11.02%</div>
+              </div>
+              <div style={{padding:"12px 24px",background:"#f0fdf4",fontSize:13,color:"#15803d",display:"flex",alignItems:"center",gap:8}}>
+                <span>✓</span><span>Auto-published. 93% confidence, all policy checks passed, no human review required.</span>
+              </div>
+            </div>
+          )}
+
+          {demoKey!=="Weekly dashboard" && demoReport && (
+            <div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 24px rgba(0,0,0,0.06)",overflow:"hidden"}}>
+              <div style={{padding:"20px 28px",borderBottom:"1px solid #f1f5f9",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{...S.label, marginBottom:4}}>AI-generated report</div>
+                  <div style={{...S.title, fontSize:15}}>{demoReport.title}</div>
+                </div>
+                <div style={{background:demoReport.confidence>=90?"#f0fdf4":"#fffbeb",border:"1px solid "+(demoReport.confidence>=90?"#bbf7d0":"#fef08a"),borderRadius:20,padding:"4px 12px",fontSize:12,fontWeight:700,color:demoReport.confidence>=90?"#16a34a":"#ca8a04"}}>
+                  {demoReport.confidence}% confidence
+                </div>
+              </div>
+              <div style={{padding:"20px 28px",borderBottom:"1px solid #f1f5f9"}}>
+                <div style={{...S.label, marginBottom:8}}>Executive summary</div>
+                <p style={{...S.body, margin:0}}>{demoReport.summary}</p>
+              </div>
+              <div style={{padding:"20px 28px",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,borderBottom:"1px solid #f1f5f9"}}>
+                {demoReport.metrics.map((m,i)=>(
+                  <div key={i} style={{background:"#f8fafc",borderRadius:10,padding:"14px 16px"}}>
+                    <div style={{...S.label, marginBottom:6}}>{m.label}</div>
+                    <div style={{fontSize:18,fontWeight:800,color:"#0f172a",marginBottom:4}}>{m.value}</div>
+                    <div style={{fontSize:11,fontWeight:600,color:m.up===null?"#94a3b8":m.up?"#16a34a":"#dc2626"}}>{m.change}</div>
+                  </div>
+                ))}
+              </div>
+              {demoReport.sections.map((s,i)=>(
+                <div key={i} style={{padding:"16px 28px",borderBottom:i<demoReport.sections.length-1?"1px solid #f1f5f9":"none",background:i%2===1?"#f8fafc":"#fff"}}>
+                  <div style={{...S.title, fontSize:13, marginBottom:6}}>{s.title}</div>
+                  <p style={{...S.body, margin:0}}>{s.body}</p>
+                </div>
+              ))}
+              <div style={{padding:"12px 28px",display:"flex",alignItems:"flex-start",gap:10,fontSize:13,...(demoReport.autoPublish?{background:"#f0fdf4",borderTop:"1px solid #bbf7d0",color:"#15803d"}:{background:"#fffbeb",borderTop:"1px solid #fef08a",color:"#92400e"})}}>
+                <span>{demoReport.autoPublish?"✓":"⏳"}</span>
+                <span>{demoReport.autoPublish?"This report passed all policy checks and was auto-published to relevant stakeholders.":"Spike alerts always require human review before being shared. This report is waiting in the queue."}</span>
+              </div>
+            </div>
+          )}
+
+          {!demoKey && (
+            <div style={{background:"#fff",borderRadius:16,border:"2px dashed #e2e8f0",padding:"48px 32px",textAlign:"center",color:"#94a3b8",fontSize:14}}>
+              Select a report type above to see a sample output.
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section id="tech" style={{background:"#fff",borderTop:"1px solid #e2e8f0",padding:"80px 32px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto"}}>
+          <div style={{textAlign:"center",marginBottom:48}}>
+            <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>Built with</h2>
+            <p style={{...S.body, maxWidth:480, margin:"0 auto"}}>Every component chosen to make the agents reliable, accurate, and auditable.</p>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+            {TECH.map(t=>(
+              <div key={t.name} style={{...S.card}}>
+                <div style={{display:"inline-block",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:6,padding:"3px 10px",fontSize:12,fontWeight:700,color:"#2563eb",marginBottom:10}}>{t.name}</div>
+                <div style={{...S.title, marginBottom:6}}>{t.role}</div>
+                <div style={{...S.body}}>{t.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section style={{background:"#fff",borderTop:"1px solid #e2e8f0",padding:"80px 32px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto"}}>
+          <div style={{textAlign:"center",marginBottom:48}}>
+            <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>Control plane and audit trail</h2>
+            <p style={{...S.body, maxWidth:560, margin:"0 auto"}}>Every agent run is logged, monitored, and auditable. The system is built for oversight, not just automation.</p>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+            {[
+              { icon:"📋", title:"Human review queue",
+                desc:"Every report that does not meet the auto-approval threshold goes to a review queue. Reviewers can approve, edit, or reject with a written reason. Rejected reports trigger a corrected re-run automatically." },
+              { icon:"🔍", title:"Full observability",
+                desc:"Every pipeline run is logged with status, confidence score, SQL queries executed, row counts, validation results, and policy decision. Nothing is a black box." },
+              { icon:"📊", title:"Audit trail",
+                desc:"All human decisions are stored with reviewer name, timestamp, and reason. Every report can be traced back to the exact query that generated it and the data it was based on." },
+              { icon:"🛡️", title:"Policy engine",
+                desc:"A deterministic rule engine evaluates every report before it is published. Rules cover confidence thresholds, hallucination flags, metric deviation limits, and required report sections. No LLM involved." },
+              { icon:"🔄", title:"Rejection feedback loop",
+                desc:"When a reviewer rejects a report with a reason, the agent pipeline re-runs automatically with that reason injected into the SQL generation prompt. The correction is applied without manual intervention." },
+              { icon:"⚙️", title:"Role-based access",
+                desc:"Admin, business, demo, and supplier roles each have a different view of the system. Enforced at both the UI layer and every API endpoint independently." },
+            ].map(t=>(
+              <div key={t.title} style={{...S.card}}>
+                <div style={{fontSize:22,marginBottom:10}}>{t.icon}</div>
+                <div style={{...S.title, marginBottom:8}}>{t.title}</div>
+                <div style={{...S.body}}>{t.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section style={{background:"#0f172a",padding:"80px 32px",textAlign:"center"}}>
+        <div style={{maxWidth:580,margin:"0 auto"}}>
+          <h2 style={{fontSize:30,fontWeight:800,color:"#fff",letterSpacing:"-0.02em",margin:"0 0 16px"}}>Open to new opportunities</h2>
+          <p style={{fontSize:15,color:"#94a3b8",margin:"0 0 32px",lineHeight:1.75}}>
+            Background in business, data, and operations with a focus on building things that actually get used. This project sits at the intersection of business intelligence, AI engineering and security. If that is a combination you are looking for, let's connect.
+          </p>
+          <div style={{display:"flex",gap:16,justifyContent:"center",flexWrap:"wrap"}}>
+            <a href={LI} target="_blank" rel="noreferrer" style={{background:"#0a66c2",color:"#fff",borderRadius:10,padding:"14px 28px",fontSize:14,fontWeight:600,textDecoration:"none",display:"inline-flex",alignItems:"center",gap:8}}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+              Message on LinkedIn
+            </a>
+            <button onClick={onDemoLogin} style={{background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"14px 28px",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+              Explore with demo account
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <footer style={{background:"#0f172a",borderTop:"1px solid rgba(255,255,255,0.08)",padding:"24px 32px",textAlign:"center",fontSize:12,color:"#475569"}}>
+        Built by Francisco Trindade, LangGraph, Claude Sonnet 4, BigQuery, FastAPI, Firebase, Cloud Run
+      </footer>
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+      `}</style>
+    </div>
+  );
+}
+// ── End Landing Page ──────────────────────────────────────────────────────────
+
+function LoginPage({onBack="", autoEmail="", autoPassword=""}) {
+  const [email,setEmail]       = useState(autoEmail);
+  const [password,setPassword] = useState(autoPassword);
   const [loading,setLoading]   = useState(false);
   const [error,setError]       = useState(null);
+  const _af = useRef(false);
+  useEffect(() => {
+    if (autoEmail && autoPassword && !_af.current) {
+      _af.current = true;
+      signInWithEmailAndPassword(auth, autoEmail, autoPassword).catch(e => setError(e.message));
+    }
+  }, [autoEmail, autoPassword]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -1781,7 +2199,9 @@ export default function App() {
   const [queueCount,setQueueCount] = useState(null);
   const [decisions,setDecisions]   = useState({});
   const [dashTab,setDashTab]       = useState("business");
-  const [theme,setTheme]           = useState("dark");
+  const [theme,setTheme]           = useState("light");
+  const [showLanding,setShowLanding]     = useState(true);
+  const [demoAutoLogin,setDemoAutoLogin] = useState(false);
   const [,forceUpdate]             = useState(0);
 
   useEffect(() => {
@@ -1816,9 +2236,23 @@ export default function App() {
   const isDemo = userRole === "demo";
 
   if (authUser === undefined) return (
-    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><Spinner/></div>
+    <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",alignItems:"center",justifyContent:"center"}}><Spinner/></div>
   );
-  if (!authUser) return <LoginPage/>;
+  if (!authUser) {
+    if (showLanding) return (
+      <LandingPage
+        onSignIn={() => setShowLanding(false)}
+        onDemoLogin={() => { setShowLanding(false); setDemoAutoLogin(true); }}
+      />
+    );
+    return (
+      <LoginPage
+        onBack={() => { setShowLanding(true); setDemoAutoLogin(false); }}
+        autoEmail={demoAutoLogin ? "demo@agentic-intel.de" : ""}
+        autoPassword={demoAutoLogin ? "DemoAccount!" : ""}
+      />
+    );
+  }
 
   if (userRole === "supplier" && supplierID) {
     return (
