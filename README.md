@@ -2,6 +2,8 @@
 
 An autonomous multi-agent BI system that generates, validates, and publishes supplier performance reports — with a human-in-the-loop review layer, a React control plane for account managers, and a Comment Intelligence layer that analyses customer feedback to surface actionable product and operations improvements.
 
+Live at **[agentic-intel.de](https://agentic-intel.de)**
+
 ---
 
 ## What it does
@@ -50,7 +52,7 @@ Orders / Incidents / Returns / Suppliers
     └─────────────────────────────────────┘
               ↓
     Control Plane (FastAPI + React)
-    Queue · Dashboards · New Report · Ask · Observability
+    Queue · Dashboards · New Report · Ask · Control Plane
               ↓
     Cloud Run (europe-west2) · agentic-intel.de
 ```
@@ -64,18 +66,22 @@ Orders / Incidents / Returns / Suppliers
 | Node | What it does |
 |---|---|
 | **discover** | Selects which BigQuery tables are needed. Template mode for scheduled reports, LLM mode for ad-hoc. Always enforces `orders` table in code for incident rate calculations. |
-| **pull** | Generates and executes BigQuery SQL. Template SQL for scheduled, LLM-generated for ad-hoc. |
+| **pull** | Generates and executes BigQuery SQL. Template SQL for scheduled, LLM-generated for ad-hoc. Auto-corrects SQL errors up to 2 attempts by feeding the exact BigQuery error back to the LLM. |
 | **analyse** | Pre-processes query results into structured analysis. Sets confidence score and flags. |
 | **generate** | Writes the full report narrative. For supplier reports, loads comment intelligence and injects a Customer Voice section. |
 | **validate** | Re-queries BigQuery independently to verify reported metrics against ground truth. Scope-aware date and supplier filtering. Flags deviations above 10% as potential hallucinations. |
 | **review** | Deterministic policy engine — auto-approves, routes to queue, or escalates based on confidence, hallucination flags, and validation results. No LLM involved. |
 | **publish** | Writes approved reports to GCS and the `approved_reports` BigQuery table. |
 
+### Rejection Feedback Loop
+
+When a reviewer rejects a report with a written reason, the agent pipeline re-runs automatically with that reason injected into the SQL generation prompt. The correction is applied without manual intervention. Max 2 re-run attempts enforced. The queue shows a re-run button with the original rejection reason pre-filled.
+
 ### Comment Intelligence Agent
 
 A standalone monthly agent that analyses customer feedback for problem SKUs.
 
-**Filter** — For each supplier, identifies the top 5 SKUs where incident or return rate exceeds the category average by more than 1 percentage point. Requires a minimum of 20 orders in the 90-day analysis window. SKUs below this threshold are excluded.
+**Filter** — For each supplier, identifies the top 5 SKUs where incident or return rate exceeds the category average by more than 1 percentage point. Requires a minimum of 20 orders in the 90-day analysis window.
 
 **Analyse** — For each flagged SKU, pulls every incident comment and return comment from the last 90 days. Calls Claude for exhaustive structured analysis: incident themes, return themes, root causes (packaging / product_quality / listing_accuracy / fulfilment), and prioritised improvement actions.
 
@@ -125,12 +131,6 @@ Runs weekly. Detects anomalies and trends across the portfolio without being ask
 - Confidence ≥ 0.75 → auto-published to Business Dashboard banner
 - Confidence < 0.75 → routes to human review
 
-**Business Dashboard banner** shows the digest narrative, severity-coded alert counts, and an expandable view of all alerts with 4-week history for trend spotting.
-
-```bash
-python agent/insight_agent.py [--dry-run]
-```
-
 ---
 
 ## SQL Strategy
@@ -151,23 +151,57 @@ Three independent layers — an attacker must bypass all three simultaneously.
 
 **Layer 3 — IAM:** The service account has read-only access to the allowed dataset only. Even a malicious query that bypasses layers 1 and 2 is rejected at the infrastructure level.
 
+**API rate limiting:** `POST /api/runs` and `POST /api/runs/rerun` are rate-limited to 10 requests per minute per user. Returns 429 on breach.
+
 ---
 
 ## Control Plane
 
-**Queue** — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs — Report tab shows the original prompt that generated the report. Decisions: Approve / Edit & Approve / Reject. Rejection with reason is stored against the run for the planned feedback loop (Phase 8).
+**Control Plane tab** — Contains two sub-tabs:
+- *Queue* — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Rejection with reason triggers automatic agent re-run with correction applied.
+- *Observability* — Full run history with confidence scores, decisions, and reviewer names.
 
 **Dashboards**
-- *Business Overview* — Weekly insights banner (digest + severity-rated alerts + 4-week history), 7 scorecards, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown, resolution mix. Cross-filtering on all charts.
+- *Business Overview* — Weekly insights banner (digest + severity-rated alerts + 4-week history), 7 scorecards with traffic light legend, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown with portfolio average reference line, resolution mix. Cross-filtering on all charts.
 - *Supplier Account* — Metrics + portfolio benchmark scorecards, category charts, SKU incident & return tables, return reasons, incident type breakdown, resolution mix. Cross-filtering on category and incident type.
 
-**New Report** — Plain English goal → pipeline runs in background → animated 7-step progress indicator → results shown automatically on completion. Low-confidence reports show amber warning with narrative still visible — internal save available immediately, supplier sharing requires admin queue approval. Recent Reports section shows all past ad-hoc runs with status and narrative.
+**New Report** — Plain English goal → pipeline runs in background → animated 6-step progress indicator → results shown automatically on completion. Low-confidence reports show amber warning with narrative still visible. Recent Reports section shows all past ad-hoc runs with status and narrative. Optional title field stores a human-readable label alongside the goal.
 
 **Ask** — Conversational natural language → BigQuery SQL → answer table. Multi-turn session with context memory. SQL shown transparently per answer. Auto-corrects SQL errors up to 3 times.
 
-**Observability** — Full run history with confidence scores, decisions, and reviewer names.
+**Supplier Portal** — Authenticated supplier-facing view at agentic-intel.de. Scoped to their `supplierID` — they see only their own data, charts, and any reports shared with them by account managers. Includes a **Customer Voice** tab with structured, interactive view of `sku_comment_intelligence` data.
 
-**Supplier Portal** — Authenticated supplier-facing view at agentic-intel.de. Scoped to their `supplierID` — they see only their own data, charts, and any reports shared with them by account managers. Includes a **Customer Voice** tab with structured, interactive view of `sku_comment_intelligence` data — flagged SKUs, root causes, incident themes, return themes, and prioritised improvement actions sourced directly from customer comments. No internal metrics, no governance UI.
+---
+
+## Landing Page
+
+Standalone portfolio showcase at agentic-intel.de (no login required). Built to demonstrate the project to potential employers:
+- Hero section with 6-agent pipeline card
+- How it works: 6 steps + 3 delivery modes (scheduled, ad-hoc, spike alerts)
+- Sample outputs: weekly dashboard, sales comparison, customer voice, spike alert
+- Control plane and audit trail section
+- Tech stack: LangGraph, Claude Sonnet 4, BigQuery, FastAPI, Firebase, Cloud Run
+- "Explore the demo account" auto-logs in with demo credentials
+
+---
+
+## Demo Account
+
+A protected read-only account for recruiters and stakeholders (demo@agentic-intel.de).
+
+**What demo can do:**
+- View all dashboards (business overview and supplier account with pre-built SUP001 data)
+- New Report: pre-filled question, fake pipeline animation, pre-written report output
+- Ask: 3 static example exchanges showing real SQL and results
+- Control Plane Queue: 3 pre-built reports always available for review decisions
+- Observability: full run history
+
+**What demo cannot do:**
+- Trigger the real agent pipeline (`POST /api/runs` returns 403)
+- Trigger re-runs
+- Access live Ask endpoints
+
+**Security:** Demo rows in BigQuery are tagged `DEMO_` and never marked as decided, so the queue always appears fresh regardless of decisions made. Rate limiter on all write endpoints.
 
 ---
 
@@ -177,7 +211,7 @@ Firebase Authentication with custom claims. Four roles enforced at both the Reac
 
 - `admin` — full control plane including queue decisions and report creation
 - `business` — dashboards, ask, new report (no queue/observability)
-- `demo` — read-only across all views, no write operations
+- `demo` — read-only across all views, no write operations, pre-built data
 - `supplier` — portal only, data scoped to their supplierID
 
 ---
@@ -225,22 +259,22 @@ supplier-bi-agent/
 │   ├── insight_agent.py          # Insight Agent — weekly anomaly detection
 │   ├── nodes/
 │   │   ├── discover.py           # Table selection — forces orders table
-│   │   ├── pull.py               # SQL generation + execution
+│   │   ├── pull.py               # SQL generation + execution + auto-correction
 │   │   ├── analyse.py            # Ad-hoc aware pre-processor, confidence scoring
 │   │   ├── generate.py           # Report narrative + Customer Voice section
 │   │   ├── validate.py           # Scope-aware ground truth validation
 │   │   ├── review.py             # Policy engine — auto-approve / queue / escalate
 │   │   └── publish.py            # GCS + BigQuery publish
 │   └── config/
-│       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns, enriched column schemas with types and descriptions
+│       ├── metadata.yaml         # Table schemas, SQL templates, allowed columns
 │       └── policies.yaml         # Auto-approve rules per report type
 ├── control_plane/
-│   ├── main.py                   # FastAPI — all endpoints, JWT middleware, session store, insights
+│   ├── main.py                   # FastAPI — all endpoints, JWT middleware, rate limiter, session store
 │   ├── requirements.txt          # Python dependencies
 │   ├── Dockerfile                # Multi-stage: Node build + Python serve
 │   └── frontend/
 │       └── src/
-│           ├── App.jsx           # React control plane — all tabs, supplier portal, auth
+│           ├── App.jsx           # React control plane — landing page, all tabs, supplier portal, demo mode
 │           └── firebase.js       # Firebase Auth initialisation
 ├── scripts/
 │   └── set_firebase_claims.py    # Set role claims on Firebase accounts
@@ -261,7 +295,7 @@ supplier-bi-agent/
 | 2 — Agent foundation | ✅ Complete | Discover + Pull nodes, SQL templates, security layer |
 | 3 — Intelligence | ✅ Complete | Analyse + Generate nodes, dual-audience reports |
 | 4 — Semantic control plane | ✅ Complete | Validation, policy engine, React audit UI |
-| 5 — Dashboards & deployment | ✅ Complete | React dashboards, ad-hoc, NL BI, Cloud Run |
-| 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Conversational Query, Insight Agent |
-| 7 — Supplier portal | 🔄 In progress | Firebase Auth · agentic-intel.de · JWT middleware · multi-role access · supplier portal · Customer Voice view · dark/light theme · demo role |
-| 8 — Agent self-correction | ⬜ Planned | Rejection feedback loop · SQL auto-correction · human corrections as agent input · confidence improvement |
+| 5 — Reporting, ad-hoc & NL BI | ✅ Complete | React dashboards, ad-hoc reports, conversational query, Cloud Run |
+| 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Insight Agent |
+| 7 — Supplier portal & demo | ✅ Complete | Firebase Auth · agentic-intel.de · supplier portal · multi-role access · landing page · demo account · rejection feedback loop · dashboard cleanup · nav reorganisation · report title field |
+| 8 — Security hardening | ⬜ Planned | BigQuery row-level policies · service account per node · column-level PII security · LangSmith tracing · CI security pipeline |
