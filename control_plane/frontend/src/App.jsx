@@ -441,7 +441,7 @@ function SupplierReports({supplierID}) {
   );
 }
 
-function SupplierDashboard({initialSupplier, supplierFacing=false}) {
+function SupplierDashboard({initialSupplier, supplierFacing=false, isDemo=false}) {
   const [suppliers,setSuppliers]     = useState([]);
   const [selectedID,setSelectedID]   = useState(initialSupplier||"");
   const [data,setData]               = useState(null);
@@ -455,11 +455,80 @@ function SupplierDashboard({initialSupplier, supplierFacing=false}) {
   const [supView,setSupView]           = useState("dashboard");
 
   useEffect(()=>{
-    if (!supplierFacing) apiFetch("/api/suppliers").then(d=>{ setSuppliers(d.suppliers||[]); if(!selectedID&&d.suppliers?.length) setSelectedID(d.suppliers[0].supplierID); }).catch(()=>{});
-  },[supplierFacing]);
+    if (!supplierFacing) if (isDemo) {
+      setSuppliers([{supplierID:"SUP001",supplierName:"Apex Manufacturing"}]);
+      setSelectedID("SUP001");
+    } else {
+      apiFetch("/api/suppliers").then(d=>{ setSuppliers(d.suppliers||[]); if(!selectedID&&d.suppliers?.length) setSelectedID(d.suppliers[0].supplierID); }).catch(()=>{});
+    }
+  },[supplierFacing,isDemo]);
+
+  const DEMO_SUPPLIER_DATA = {
+    supplier: {supplierID:"SUP001",supplierName:"Apex Manufacturing"},
+    scorecards: {supplierID:"SUP001",supplierName:"Apex Manufacturing",total_orders:19821,
+      total_gross_revenue:4127430,total_net_revenue:3842010,total_product_cost:3280000,
+      incident_rate_pct:10.2,return_rate_pct:6.1,total_resolution_cost:38240,
+      portfolio_avg_incident_rate:11.02,portfolio_avg_return_rate:6.4,
+      portfolio_avg_res_cost:36100,portfolio_gross_revenue:42100000},
+    monthly_trend:[
+      {month:"2025-11",incident_rate_pct:9.8,return_rate_pct:5.9,total_orders:3241,total_gross_revenue:682000,total_resolution_cost:6200},
+      {month:"2025-12",incident_rate_pct:10.1,return_rate_pct:6.0,total_orders:3180,total_gross_revenue:668000,total_resolution_cost:6400},
+      {month:"2026-01",incident_rate_pct:10.3,return_rate_pct:6.2,total_orders:3420,total_gross_revenue:718000,total_resolution_cost:6900},
+      {month:"2026-02",incident_rate_pct:10.0,return_rate_pct:6.1,total_orders:3380,total_gross_revenue:710000,total_resolution_cost:6700},
+      {month:"2026-03",incident_rate_pct:10.4,return_rate_pct:6.3,total_orders:3510,total_gross_revenue:738000,total_resolution_cost:7100},
+      {month:"2026-04",incident_rate_pct:10.6,return_rate_pct:6.2,total_orders:3290,total_gross_revenue:611430,total_resolution_cost:6940},
+    ],
+    cat_incident_rate:[
+      {productCategory:"Electronics",incident_rate_pct:12.4,total_orders:2840},
+      {productCategory:"Sports & Outdoors",incident_rate_pct:8.1,total_orders:5210},
+      {productCategory:"Home & Garden",incident_rate_pct:10.8,total_orders:4380},
+      {productCategory:"Clothing",incident_rate_pct:11.2,total_orders:4190},
+      {productCategory:"Tools",incident_rate_pct:9.3,total_orders:3201},
+    ],
+    cat_return_rate:[
+      {productCategory:"Electronics",return_rate_pct:7.2,total_orders:2840},
+      {productCategory:"Sports & Outdoors",return_rate_pct:4.8,total_orders:5210},
+      {productCategory:"Home & Garden",return_rate_pct:6.4,total_orders:4380},
+      {productCategory:"Clothing",return_rate_pct:7.1,total_orders:4190},
+      {productCategory:"Tools",return_rate_pct:5.2,total_orders:3201},
+    ],
+    incident_types:[
+      {incidentType:"damaged_product",total_incidents:820},
+      {incidentType:"missing_parts",total_incidents:412},
+      {incidentType:"late_delivery",total_incidents:380},
+      {incidentType:"wrong_item",total_incidents:210},
+    ],
+    resolution_mix:[
+      {incidentResolution:"refund",total_incidents:980},
+      {incidentResolution:"replacement",total_incidents:612},
+      {incidentResolution:"credit",total_incidents:230},
+    ],
+    return_reasons:[
+      {buyersRemorseReason:"defective_product",total_returns:312},
+      {buyersRemorseReason:"not_as_described",total_returns:198},
+      {buyersRemorseReason:"damaged_in_transit",total_returns:142},
+      {buyersRemorseReason:"changed_mind",total_returns:89},
+    ],
+    sku_incidents:[
+      {sku:"SKU-E041",total_incidents:142,incident_rate_pct:18.2},
+      {sku:"SKU-C112",total_incidents:98,incident_rate_pct:14.1},
+      {sku:"SKU-H023",total_incidents:87,incident_rate_pct:12.8},
+      {sku:"SKU-E087",total_incidents:76,incident_rate_pct:11.9},
+      {sku:"SKU-T044",total_incidents:64,incident_rate_pct:9.4},
+    ],
+    sku_returns:[
+      {sku:"SKU-C112",total_returns:118,return_rate_pct:17.0},
+      {sku:"SKU-E041",total_returns:104,return_rate_pct:13.3},
+      {sku:"SKU-H023",total_returns:82,return_rate_pct:12.1},
+      {sku:"SKU-E087",total_returns:71,return_rate_pct:11.1},
+      {sku:"SKU-T044",total_returns:48,return_rate_pct:7.0},
+    ],
+    reports:[],
+  };
 
   const load = useCallback(async()=>{
     if (!selectedID) return;
+    if (isDemo) { setData(DEMO_SUPPLIER_DATA); setLoading(false); return; }
     setLoading(true); setError(null);
     try {
       const q=new URLSearchParams();
@@ -876,7 +945,7 @@ function NewReport({onCreated, isDemo=false}) {
     if (!goal.trim()||(isSupplier&&!supplierID)) return;
     if (isDemo) {
       const demoResult = DEMO_REPORTS[reportType] || DEMO_REPORTS["adhoc_business"];
-      setDemoPhase("running"); setDemoStep(0); setError(null); setRunData(null);
+      setDemoPhase("running"); setDemoStep(0); setError(null); setRunData(null); setStartTime(Date.now());
       for (let i = 0; i < 6; i++) {
         await new Promise(r => setTimeout(r, 800 + Math.random()*400));
         setDemoStep(i+1);
@@ -967,7 +1036,30 @@ function NewReport({onCreated, isDemo=false}) {
         </button>
         {(running || isReady) && startTime && (
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginTop:4}}>
-            <PipelineProgress startTime={startTime} status={status} />
+            {!isDemo && <PipelineProgress startTime={startTime} status={status} />}
+            {isDemo && (demoPhase==="running"||demoPhase==="done") && (
+              <div style={{display:"flex",flexDirection:"column",gap:8,padding:"4px 0"}}>
+                {["Discover","Pull","Analyse","Generate","Validate","Review"].map((s,i)=>(
+                  <div key={s} style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{width:20,height:20,borderRadius:"50%",flexShrink:0,
+                      background:demoStep>i?"#f0fdf4":demoStep===i?"#eff6ff":"transparent",
+                      border:`1px solid ${demoStep>i?"#bbf7d0":demoStep===i?C.blue:C.border}`,
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:10,fontWeight:700,
+                      color:demoStep>i?"#16a34a":demoStep===i?C.blue:C.muted}}>
+                      {demoStep>i?"✓":i+1}
+                    </div>
+                    <div style={{fontSize:13,fontWeight:demoStep===i?600:400,
+                      color:demoStep>i?C.text:demoStep===i?C.text:C.muted}}>{s}</div>
+                    {demoStep===i&&demoPhase==="running"&&(
+                      <div style={{width:12,height:12,border:`2px solid ${C.blue}`,
+                        borderTopColor:"transparent",borderRadius:"50%",
+                        animation:"spin 0.7s linear infinite",marginLeft:4}}/>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {runID && <div style={{fontSize:11,color:C.border,fontFamily:"monospace",marginTop:8}}>Run ID: {runID}</div>}
           </div>
         )}
@@ -2314,6 +2406,7 @@ function LoginPage({onBack="", autoEmail="", autoPassword=""}) {
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      {onBack && <button onClick={onBack} style={{position:"fixed",top:16,left:24,background:"none",border:"none",color:C.muted,fontSize:13,cursor:"pointer",fontWeight:500}}>← Back</button>}
       <div style={{width:"100%",maxWidth:380}}>
         <div style={{textAlign:"center",marginBottom:36}}>
           <div style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:"-0.02em",marginBottom:6}}>Agentic <span style={{color:C.blue}}>Intel</span></div>
@@ -2383,7 +2476,7 @@ export default function App() {
     }
   }, [decisions, view, userRole]);
 
-  const handleSignOut = async () => { await signOut(auth); };
+  const handleSignOut = async () => { await signOut(auth); setShowLanding(true); setDemoAutoLogin(false); };
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
     applyTheme(next);
@@ -2490,7 +2583,7 @@ export default function App() {
               ))}
             </div>
             {dashTab==="business"&&<BusinessDashboard/>}
-            {dashTab==="supplier"&&<SupplierDashboard/>}
+            {dashTab==="supplier"&&<SupplierDashboard isDemo={isDemo}/>}
           </div>
         )}
         {view==="new_report"    &&<NewReport key={view} isDemo={isDemo} onCreated={()=>setView("control_plane")}/>}
