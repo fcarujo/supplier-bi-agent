@@ -2605,7 +2605,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
           </div>
         </div>
         <div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 24px rgba(0,0,0,0.06)",padding:28}}>
-          <div style={{...S.label, marginBottom:16}}>Live agent run, 6 specialised agents</div>
+          <div style={{...S.label, marginBottom:16}}>Live agent run, 7 pipeline agents · 11 total</div>
           {[
             {label:"Discover", desc:"Selects data tables",               done:true,  pending:false},
             {label:"Pull",     desc:"Writes and runs SQL query",         done:true,  pending:false},
@@ -2635,7 +2635,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
         <div style={{maxWidth:1100,margin:"0 auto"}}>
           <div style={{textAlign:"center",marginBottom:48}}>
             <h2 style={{fontSize:30,fontWeight:800,letterSpacing:"-0.02em",margin:"0 0 12px",color:"#0f172a"}}>How it works</h2>
-            <p style={{...S.body, maxWidth:520, margin:"0 auto"}}>Six specialised agents. Three ways a report reaches you. One human decision gate.</p>
+            <p style={{...S.body, maxWidth:520, margin:"0 auto"}}>Eleven specialised agents. Three ways a report reaches you. One human decision gate.</p>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:40,padding:"20px 24px",background:"#f8fafc",borderRadius:12,border:"1px solid #e2e8f0"}}>
             {[
