@@ -73,6 +73,7 @@ jobs:
           npm ci
           npm run build
           cd ..
+          mkdir -p static
           cp -r frontend/dist/* static/
 
       - name: Deploy to Cloud Run
