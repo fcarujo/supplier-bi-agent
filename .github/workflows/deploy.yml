@@ -41,10 +41,14 @@ jobs:
         run: |
           pip-audit \
             -r control_plane/requirements.txt \
+            --no-deps \
             --ignore-vuln GHSA-w235-7p84-xx57
 
       - name: pip-audit — data pipeline
-        run: pip-audit -r data/daily_append/requirements.txt
+        run: |
+          pip-audit \
+            -r data/daily_append/requirements.txt \
+            --no-deps
 
   deploy:
     name: Deploy to Cloud Run
