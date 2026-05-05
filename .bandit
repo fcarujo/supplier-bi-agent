@@ -1,12 +1,3 @@
-[bandit]
-# B608: SQL injection via f-string queries
-# All dynamic values in queries come from Firebase JWT claims (run_id, supplier_id)
-# or environment variables (GCP_PROJECT, BQ_DATASET) — not from raw user input.
-# BigQuery client provides an additional protection layer.
-# Accepted risk — documented here rather than silently skipped.
-#
-# B110: try/except/pass
-# Used intentionally for BigQuery streaming buffer workarounds where
-# UPDATE operations may fail if a row is still in the streaming buffer.
-# The pass is safe — the operation is retried or is non-critical.
-skips = B608,B110
+skips:
+  - B608
+  - B110
