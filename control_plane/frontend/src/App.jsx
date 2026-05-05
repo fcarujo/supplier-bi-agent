@@ -1935,7 +1935,7 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
   );
 }
 
-// ── Observability ─────────────────────────────────────────────────────────────
+// ── Agentic Governance ──────────────────────────────────────────────────────────
 function Observability() {
   const [obsTab,setObsTab]       = useState("runs");
   const [history,setHistory]     = useState([]);
@@ -2091,8 +2091,8 @@ function Observability() {
   return (
     <div>
       <div style={{marginBottom:20}}>
-        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:"0 0 4px"}}>Observability</h2>
-        <p style={{fontSize:13,color:C.muted,margin:0}}>Pipeline run history and security audit log</p>
+        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:"0 0 4px"}}>Agentic Governance</h2>
+        <p style={{fontSize:13,color:C.muted,margin:0}}>Monitor, audit and diagnose autonomous agent activity</p>
       </div>
 
       <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
@@ -3043,7 +3043,7 @@ export default function App() {
         {view==="control_plane"&&!selected&&(
           <div>
             <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
-              {[{id:"queue",label:"Queue"},{id:"observability",label:"Observability"}].map(t=>(
+              {[{id:"queue",label:"Queue"},{id:"observability",label:"Agentic Governance"}].map(t=>(
                 <button key={t.id} onClick={()=>setControlTab(t.id)} style={{background:"none",border:"none",borderBottom:controlTab===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:controlTab===t.id?C.blue:C.muted,padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:controlTab===t.id?600:400}}>
                   {t.label}{t.id==="queue"&&queueCount!=null&&<span style={{marginLeft:6,background:C.blue,color:"#fff",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{queueCount}</span>}
                 </button>
