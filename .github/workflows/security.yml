@@ -1,0 +1,63 @@
+name: Security Checks
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  security:
+    name: Bandit + pip-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install security tools
+        run: pip install bandit pip-audit
+
+      # ── Bandit — static security analysis ────────────────────────────────
+      # Scans Python source for known security mistakes.
+      # Skips: .venv, test files, data generation scripts (synthetic data only).
+      # Severity threshold: medium and above only (-l flag).
+      # Confidence threshold: medium and above only (-i flag).
+      - name: Bandit — control plane
+        run: |
+          bandit -r control_plane/ \
+            --exclude control_plane/frontend \
+            -l -i \
+            --skip B101,B311 \
+            -f txt
+        # B101: assert statements (fine in non-production paths)
+        # B311: random (we use it for non-security purposes only)
+
+      - name: Bandit — agent nodes
+        run: |
+          bandit -r agent/ \
+            --exclude agent/.venv \
+            -l -i \
+            --skip B101,B311 \
+            -f txt
+
+      # ── pip-audit — dependency vulnerability scan ─────────────────────────
+      # Checks installed packages against the OSV vulnerability database.
+      # Runs against both requirements files independently.
+      - name: pip-audit — control plane dependencies
+        run: |
+          pip-audit \
+            -r control_plane/requirements.txt \
+            --ignore-vuln GHSA-w235-7p84-xx57
+        # GHSA-w235-7p84-xx57: starlette multipart DoS — not exploitable
+        # in our setup (no file upload endpoints exposed to untrusted users)
+
+      - name: pip-audit — data pipeline dependencies
+        run: |
+          pip-audit \
+            -r data/daily_append/requirements.txt
