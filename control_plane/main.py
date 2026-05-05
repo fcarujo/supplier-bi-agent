@@ -615,6 +615,103 @@ def get_security_events(
     }
 
 
+# ── GET /api/observability/performance  (internal: admin + demo) ──────────────
+
+@app.get("/api/observability/performance")
+def get_performance(
+    days: int = 30,
+    user: AuthUser = Depends(require_internal),
+):
+    client = bq()
+
+    by_type_rows = list(client.query(f"""
+        WITH deduped AS (
+            SELECT runID, reportType, confidence,
+                   CAST(policyDecision AS STRING) AS policyDecision,
+                   status, errors, startedAt,
+                   ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE status IN ('approved','pending_review','escalated','pending_publish','rejected')
+              AND startedAt >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        )
+        SELECT
+            reportType,
+            COUNT(*)                                                       AS total_runs,
+            ROUND(AVG(confidence), 3)                                      AS avg_confidence,
+            COUNTIF(policyDecision = 'auto_approve')                       AS auto_approved,
+            COUNTIF(policyDecision = 'route_to_queue')                     AS routed_to_queue,
+            COUNTIF(policyDecision = 'escalate')                           AS escalated,
+            ROUND(COUNTIF(policyDecision = 'auto_approve') * 100.0 / COUNT(*), 1) AS auto_approval_rate_pct,
+            ROUND(COUNTIF(policyDecision = 'escalate')    * 100.0 / COUNT(*), 1) AS escalation_rate_pct
+        FROM deduped WHERE rn = 1
+        GROUP BY reportType
+        ORDER BY total_runs DESC
+    """).result())
+
+    trend_rows = list(client.query(f"""
+        WITH deduped AS (
+            SELECT runID, confidence,
+                   CAST(policyDecision AS STRING) AS policyDecision,
+                   startedAt,
+                   ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE status IN ('approved','pending_review','escalated','pending_publish','rejected')
+              AND startedAt >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        )
+        SELECT
+            DATE_TRUNC(DATE(startedAt), WEEK)          AS week,
+            ROUND(AVG(confidence), 3)                   AS avg_confidence,
+            COUNT(*)                                    AS total_runs,
+            COUNTIF(policyDecision = 'auto_approve')    AS auto_approved,
+            COUNTIF(policyDecision = 'escalate')        AS escalated
+        FROM deduped WHERE rn = 1
+        GROUP BY week ORDER BY week ASC
+    """).result())
+
+    error_rows = list(client.query(f"""
+        WITH deduped AS (
+            SELECT runID, reportType, errors, startedAt,
+                   ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
+            FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+            WHERE status IN ('pending_review','escalated','rejected')
+              AND errors IS NOT NULL AND TO_JSON_STRING(errors) != '[]'
+              AND startedAt >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        )
+        SELECT reportType, TO_JSON_STRING(errors) AS errors, startedAt
+        FROM deduped WHERE rn = 1
+        ORDER BY startedAt DESC LIMIT 50
+    """).result())
+
+    import json as _json
+    error_patterns = {}
+    for row in error_rows:
+        d = _row_to_dict(row)
+        try:
+            errs = _json.loads(d.get("errors") or "[]")
+        except Exception:
+            errs = []
+        for e in errs:
+            if "hallucination" in e.lower():
+                key = "Hallucination flags"
+            elif "required section" in e.lower():
+                key = "Missing report sections"
+            elif "guardrail" in e.lower():
+                key = "Guardrail violations"
+            elif "sql" in e.lower() or "query" in e.lower():
+                key = "SQL errors"
+            else:
+                key = "Other"
+            error_patterns[key] = error_patterns.get(key, 0) + 1
+
+    return {
+        "period_days":    days,
+        "by_report_type": [_row_to_dict(r) for r in by_type_rows],
+        "weekly_trend":   [_row_to_dict(r) for r in trend_rows],
+        "error_patterns": [{"pattern": k, "count": v}
+                           for k, v in sorted(error_patterns.items(), key=lambda x: -x[1])],
+    }
+
+
 
 # ── GET /api/suppliers  (internal: admin + business) ──────────────────────────
 

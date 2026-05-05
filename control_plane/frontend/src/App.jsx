@@ -1940,6 +1940,7 @@ function Observability() {
   const [obsTab,setObsTab]       = useState("runs");
   const [history,setHistory]     = useState([]);
   const [events,setEvents]       = useState([]);
+  const [perf,setPerf]           = useState(null);
   const [loading,setLoading]     = useState(true);
   const [error,setError]         = useState(null);
   const [sevFilter,setSevFilter] = useState("ALL");
@@ -1960,8 +1961,17 @@ function Observability() {
     finally{ setLoading(false); }
   },[]);
 
+  const loadPerf = useCallback(async()=>{
+    setLoading(true); setError(null);
+    try{ const d=await apiFetch("/api/observability/performance?days=30"); setPerf(d); }
+    catch(e){ setError(e.message); }
+    finally{ setLoading(false); }
+  },[]);
+
   useEffect(()=>{
-    if(obsTab==="runs") loadRuns(); else loadSecurity();
+    if(obsTab==="runs") loadRuns();
+    else if(obsTab==="security") loadSecurity();
+    else if(obsTab==="performance") loadPerf();
   },[obsTab]);
 
   const toggleRun = async(runID)=>{
@@ -2086,7 +2096,7 @@ function Observability() {
       </div>
 
       <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
-        {[{id:"runs",label:"Pipeline Runs"},{id:"security",label:"Security Log"}].map(t=>(
+        {[{id:"runs",label:"Pipeline Runs"},{id:"performance",label:"Agent Performance"},{id:"security",label:"Security Log"}].map(t=>(
           <button key={t.id} onClick={()=>setObsTab(t.id)}
             style={{background:"none",border:"none",
               borderBottom:obsTab===t.id?`2px solid ${C.blue}`:"2px solid transparent",
@@ -2233,6 +2243,133 @@ function Observability() {
             {!error&&history.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No run history yet.</div>}
           </div>
         </div>
+      )}
+
+      {/* ── Agent Performance tab ── */}
+      {!loading&&obsTab==="performance"&&perf&&(
+        <div>
+          {/* Summary scorecards */}
+          {(()=>{
+            const total   = perf.by_report_type.reduce((s,r)=>s+r.total_runs,0);
+            const autoApp = perf.by_report_type.reduce((s,r)=>s+r.auto_approved,0);
+            const escalated = perf.by_report_type.reduce((s,r)=>s+r.escalated,0);
+            const avgConf = perf.by_report_type.length
+              ? perf.by_report_type.reduce((s,r)=>s+(r.avg_confidence||0),0)/perf.by_report_type.length
+              : 0;
+            return (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
+                <Scorecard label="Total Runs (30d)" value={total}/>
+                <Scorecard label="Auto-approved" value={autoApp} sub={total?`${((autoApp/total)*100).toFixed(0)}% of runs`:""}/>
+                <Scorecard label="Escalated" value={escalated} sub={total?`${((escalated/total)*100).toFixed(0)}% of runs`:""}/>
+                <Scorecard label="Avg Confidence" value={fmt.pct((avgConf||0)*100)}/>
+              </div>
+            );
+          })()}
+
+          {/* By report type */}
+          <div style={{marginBottom:24}}>
+            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:12}}>Performance by Report Type</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {perf.by_report_type.map((r,i)=>{
+                const autoRate = r.auto_approval_rate_pct||0;
+                const escRate  = r.escalation_rate_pct||0;
+                const conf     = (r.avg_confidence||0)*100;
+                const confColor = conf>=80?C.green:conf>=60?C.amber:C.red;
+                const diagnosis = autoRate<50
+                  ? "Low auto-approval rate — review policy thresholds or report type prompts"
+                  : escRate>30
+                  ? "High escalation rate — check validation rules and confidence scoring"
+                  : conf<60
+                  ? "Low average confidence — agents struggling with this report type"
+                  : null;
+                return (
+                  <div key={i} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 18px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8,flexWrap:"wrap"}}>
+                      <span style={{fontSize:13,fontWeight:600,color:C.text,flex:1}}>{fmt.label(r.reportType)}</span>
+                      <span style={{fontSize:12,color:C.muted}}>{r.total_runs} run{r.total_runs!==1?"s":""}</span>
+                      <span style={{fontSize:12,fontWeight:700,color:confColor}}>Confidence: {conf.toFixed(0)}%</span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:diagnosis?10:0}}>
+                      {[
+                        {label:"Auto-approved", value:r.auto_approved, pct:autoRate, good:true},
+                        {label:"Routed to queue", value:r.routed_to_queue, pct:100-autoRate-escRate, good:null},
+                        {label:"Escalated", value:r.escalated, pct:escRate, good:false},
+                      ].map((m,j)=>(
+                        <div key={j} style={{background:C.bg,borderRadius:6,padding:"8px 10px"}}>
+                          <div style={{fontSize:11,color:C.muted,marginBottom:2}}>{m.label}</div>
+                          <div style={{fontSize:15,fontWeight:700,color:m.good===true?C.green:m.good===false&&m.value>0?C.red:C.text}}>{m.value}</div>
+                          <div style={{fontSize:11,color:C.muted}}>{m.pct?.toFixed(0)}%</div>
+                        </div>
+                      ))}
+                    </div>
+                    {diagnosis&&(
+                      <div style={{fontSize:12,color:C.amber,padding:"6px 10px",background:`${C.amber}0a`,border:`1px solid ${C.amber}30`,borderRadius:6}}>
+                        ⚠ {diagnosis}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {perf.by_report_type.length===0&&(
+                <div style={{textAlign:"center",padding:40,color:C.muted,fontSize:13}}>No completed runs in the last 30 days.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Error patterns */}
+          {perf.error_patterns.length>0&&(
+            <div style={{marginBottom:24}}>
+              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:12}}>Most Common Failure Patterns</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {perf.error_patterns.map((e,i)=>{
+                  const actions = {
+                    "Hallucination flags": "Check the Validate node date scope — likely comparing YTD figures against full-year baselines. Review SQL in affected runs.",
+                    "Missing report sections": "The Generate node is writing narratives missing sections required by the policy engine. Check report type matches the goal.",
+                    "Guardrail violations": "Query returned suspicious data. Check Pull SQL date filters and supplier scoping in affected runs.",
+                    "SQL errors": "LLM generating invalid SQL for some tables. Review column descriptions in metadata.yaml for those tables.",
+                    "Other": "Review individual runs in Pipeline Runs tab for detail.",
+                  };
+                  return (
+                    <div key={i} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 16px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                        <span style={{fontSize:13,fontWeight:600,color:C.text,flex:1}}>{e.pattern}</span>
+                        <span style={{fontSize:13,fontWeight:700,color:C.red}}>{e.count} occurrence{e.count!==1?"s":""}</span>
+                      </div>
+                      <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>→ {actions[e.pattern]||actions["Other"]}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Weekly trend */}
+          {perf.weekly_trend.length>1&&(
+            <div>
+              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:12}}>Weekly Trend</div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {perf.weekly_trend.map((w,i)=>{
+                  const conf = (w.avg_confidence||0)*100;
+                  const confColor = conf>=80?C.green:conf>=60?C.amber:C.red;
+                  return (
+                    <div key={i} style={{display:"grid",gridTemplateColumns:"120px 1fr auto auto auto",gap:12,alignItems:"center",padding:"8px 12px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:6}}>
+                      <span style={{fontSize:12,color:C.muted}}>{w.week}</span>
+                      <div style={{background:C.bg,borderRadius:4,height:6,overflow:"hidden"}}>
+                        <div style={{width:`${conf}%`,height:"100%",background:confColor,borderRadius:4}}/>
+                      </div>
+                      <span style={{fontSize:12,fontWeight:700,color:confColor,width:40,textAlign:"right"}}>{conf.toFixed(0)}%</span>
+                      <span style={{fontSize:11,color:C.muted,width:50,textAlign:"right"}}>{w.total_runs} runs</span>
+                      <span style={{fontSize:11,color:C.green,width:50,textAlign:"right"}}>{w.auto_approved} auto</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {!loading&&obsTab==="performance"&&!perf&&!error&&(
+        <div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No performance data available.</div>
       )}
 
       {/* ── Security Log tab ── */}
