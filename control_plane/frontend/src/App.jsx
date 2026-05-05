@@ -1937,34 +1937,376 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
 
 // ── Observability ─────────────────────────────────────────────────────────────
 function Observability() {
-  const [history,setHistory] = useState([]);
-  const [loading,setLoading] = useState(true);
-  const [error,setError]     = useState(null);
-  const load = useCallback(async()=>{ setLoading(true); setError(null); try{ const d=await apiFetch("/api/history"); setHistory(d.history||[]); }catch(e){ setError(e.message); }finally{ setLoading(false); } },[]);
-  useEffect(()=>{ load(); },[load]);
-  if(loading) return <Spinner/>;
-  const approved=history.filter(r=>["approved","edited_and_approved","auto_approved"].includes(r.decision)).length;
-  const rejected=history.filter(r=>r.decision==="rejected").length;
-  const autoApp =history.filter(r=>r.decision==="auto_approved").length;
-  const avgConf =history.length?history.reduce((s,r)=>s+(r.confidence||0),0)/history.length:0;
+  const [obsTab,setObsTab]       = useState("runs");
+  const [history,setHistory]     = useState([]);
+  const [events,setEvents]       = useState([]);
+  const [loading,setLoading]     = useState(true);
+  const [error,setError]         = useState(null);
+  const [sevFilter,setSevFilter] = useState("ALL");
+  const [expanded,setExpanded]   = useState(null);
+  const [runDetail,setRunDetail] = useState({});
+
+  const loadRuns = useCallback(async()=>{
+    setLoading(true); setError(null);
+    try{ const d=await apiFetch("/api/history"); setHistory(d.history||[]); }
+    catch(e){ setError(e.message); }
+    finally{ setLoading(false); }
+  },[]);
+
+  const loadSecurity = useCallback(async()=>{
+    setLoading(true); setError(null);
+    try{ const d=await apiFetch("/api/observability/security?limit=100"); setEvents(d.events||[]); }
+    catch(e){ setError(e.message); }
+    finally{ setLoading(false); }
+  },[]);
+
+  useEffect(()=>{
+    if(obsTab==="runs") loadRuns(); else loadSecurity();
+  },[obsTab]);
+
+  const toggleRun = async(runID)=>{
+    if(expanded===runID){ setExpanded(null); return; }
+    setExpanded(runID);
+    if(runDetail[runID]) return;
+    try{ const d=await apiFetch(`/api/runs/${runID}`); setRunDetail(p=>({...p,[runID]:d})); }
+    catch(e){ console.error(e); }
+  };
+
+  // ── Diagnosis engine ──────────────────────────────────────────────────────
+  // Maps error strings and event types to: node, root cause, action
+  const diagnoseError = (msg) => {
+    if (!msg) return null;
+    const m = msg.toLowerCase();
+    if (m.includes("required section missing")) return {
+      node: "Generate", rootCause: "Report structure mismatch",
+      action: "The LLM wrote a narrative missing sections required by the policy engine. Check that the report type matches the goal — an ad-hoc supplier question should use adhoc_supplier not adhoc_business.",
+      severity: "high"
+    };
+    if (m.includes("hallucination") && m.includes("deviation")) {
+      const devMatch = msg.match(/([0-9]+\.?[0-9]*)%\s*deviation/i);
+      const dev = devMatch ? parseFloat(devMatch[1]) : 0;
+      if (dev > 50) return {
+        node: "Validate → Generate", rootCause: "Large data discrepancy",
+        action: "The reported figure differs from independently queried data by more than 50%. Check the date scope in the Pull SQL — the LLM may have compared YTD figures against full-year baselines.",
+        severity: "high"
+      };
+      return {
+        node: "Validate → Generate", rootCause: "Minor data discrepancy",
+        action: "Small deviation between reported and validated figures. Review the generated narrative to confirm the numbers match the SQL output. May be a rounding difference.",
+        severity: "medium"
+      };
+    }
+    if (m.includes("guardrail")) return {
+      node: "Analyse", rootCause: "Data guardrail violation",
+      action: "Query returned suspicious data (e.g. impossibly high values). Check the Pull SQL date filters and supplier scoping.",
+      severity: "high"
+    };
+    if (m.includes("invalid table") || m.includes("invalid tables")) return {
+      node: "Discover", rootCause: "LLM selected invalid table",
+      action: "The Discover node requested a table not in the allowlist. This was auto-corrected but indicates the LLM is guessing table names. Review the metadata.yaml table descriptions.",
+      severity: "medium"
+    };
+    if (m.includes("no valid tables")) return {
+      node: "Discover", rootCause: "No tables selected",
+      action: "Discover failed to select any valid tables. Check metadata.yaml for the report type and verify table definitions exist.",
+      severity: "high"
+    };
+    if (m.includes("sql") && (m.includes("failed") || m.includes("error"))) return {
+      node: "Pull", rootCause: "SQL execution error",
+      action: "BigQuery rejected the generated SQL. The auto-correction may have resolved it. Check the SQL shown below for schema mismatches.",
+      severity: "medium"
+    };
+    return null;
+  };
+
+  const diagnoseSecurityEvent = (ev) => {
+    const type = ev.eventType || "";
+    const detail = ev.detail || "";
+    const raw = ev.rawContent || "";
+
+    if (type === "COLUMN_NOT_ON_ALLOWLIST") {
+      const colMatch = detail.match(/Column not on allowlist: '(\w+)'/);
+      const col = colMatch ? colMatch[1] : "";
+      const tablePathFragments = ["agent","bi","supplier","project","dataset"];
+      const aliasSuffixes = ["_rate","_total","_units","_count","_pct","_cost","_revenue","_sold"];
+      if (tablePathFragments.includes(col)) return {
+        node: "Pull", rootCause: "False positive — table path fragment",
+        action: "The column extractor incorrectly parsed part of the BigQuery path (`supplier-bi-agent-2025.supplier_bi.table`) as a column name. No real security issue. Fix: improve the column extractor regex in pull.py.",
+        isFalsePositive: true
+      };
+      if (aliasSuffixes.some(s => col.includes(s))) return {
+        node: "Pull", rootCause: "False positive — computed column alias",
+        action: "The SQL uses an alias like `return_rate` or `total_units_sold` as an output name. The extractor flagged it as a source column. No real security issue. Fix: improve the AS-alias stripping in the column extractor.",
+        isFalsePositive: true
+      };
+      return {
+        node: "Pull", rootCause: "LLM used unauthorised column",
+        action: "The LLM generated SQL referencing a column not on the allowlist for this table. The query was blocked. Review the allowlist in metadata.yaml — if the column is legitimate, add it. If not, the LLM prompt may need stronger column constraints.",
+        isFalsePositive: false
+      };
+    }
+    if (type === "PII_COLUMN_BLOCKED") return {
+      node: "Pull", rootCause: "PII column in generated SQL",
+      action: "The LLM attempted to query a permanently blocked PII column. Query was hard-blocked. No data was accessed. Review the system prompt in pull.py to reinforce PII column restrictions.",
+      isFalsePositive: false
+    };
+    if (type === "DANGEROUS_SQL_OPERATION") return {
+      node: "Pull", rootCause: "Dangerous SQL operation",
+      action: "The LLM generated SQL containing a write or admin operation (DROP/DELETE/UPDATE etc.). Query was blocked immediately. Review the LLM prompt and consider tightening injection detection in discover.py.",
+      isFalsePositive: false
+    };
+    if (type === "INJECTION_PATTERN_DETECTED") return {
+      node: "Discover", rootCause: "Prompt injection attempt in goal",
+      action: "A suspicious pattern was detected in the user-submitted goal. Input was sanitised and the pipeline continued. Review the raw content to determine if this was a genuine attack or a false positive from legitimate phrasing.",
+      isFalsePositive: false
+    };
+    if (type === "RATE_LIMIT_BREACH") return {
+      node: "API", rootCause: "Rate limit exceeded",
+      action: "A user hit the 10 requests/minute limit. Request was rejected with HTTP 429. If this is a legitimate user, consider raising the limit. If automated, investigate the user account.",
+      isFalsePositive: false
+    };
+    return null;
+  };
+
+  const sevColor = s => s==="HIGH"?C.red:s==="MEDIUM"?C.amber:C.muted;
+  const diagColor = d => d?.isFalsePositive?C.muted:d?.severity==="high"?C.red:C.amber;
+  const filteredEvents = sevFilter==="ALL"?events:events.filter(e=>e.severity===sevFilter);
+  const approved = history.filter(r=>["approved","edited_and_approved","auto_approved"].includes(r.decision)).length;
+  const rejected = history.filter(r=>r.decision==="rejected").length;
+  const autoApp  = history.filter(r=>r.decision==="auto_approved").length;
+  const avgConf  = history.length?history.reduce((s,r)=>s+(r.confidence||0),0)/history.length:0;
+  const highSec  = events.filter(e=>e.severity==="HIGH").length;
+  const decColor = d=>["approved","edited_and_approved","auto_approved"].includes(d)?C.green:d==="rejected"?C.red:C.amber;
+
   return (
     <div>
-      <div style={{marginBottom:24}}><h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>Observability</h2><p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Run history and system health</p></div>
-      {error&&<ErrMsg message={error} onRetry={load}/>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
-        <Scorecard label="Total Runs" value={history.length}/><Scorecard label="Approved" value={approved} sub={`${autoApp} auto`}/><Scorecard label="Rejected" value={rejected}/><Scorecard label="Avg Confidence" value={fmt.pct(avgConf*100)}/>
+      <div style={{marginBottom:20}}>
+        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:"0 0 4px"}}>Observability</h2>
+        <p style={{fontSize:13,color:C.muted,margin:0}}>Pipeline run history and security audit log</p>
       </div>
-      <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {history.map(run=>(
-          <div key={run.runID} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:16,alignItems:"center",padding:"12px 16px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8}}>
-            <div><div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:13,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>{run.supplierID&&<Badge>{run.supplierID}</Badge>}</div><div style={{fontSize:11,color:C.muted,marginTop:3}}>{run.decidedAt?new Date(run.decidedAt).toLocaleDateString("en-GB"):new Date(run.startedAt).toLocaleDateString("en-GB")} · {run.reviewer||"system"}</div></div>
-            <ConfMeter value={run.confidence||0}/>
-            <Badge variant={run.decision==="rejected"?"rejected":"approved"}>{run.decision==="auto_approved"?"Auto":run.decision==="edited_and_approved"?"Edited":run.decision||run.status}</Badge>
-            <span style={{fontSize:11,fontFamily:"monospace",color:C.muted}}>{(run.runID||"").slice(0,8)}</span>
-          </div>
+
+      <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
+        {[{id:"runs",label:"Pipeline Runs"},{id:"security",label:"Security Log"}].map(t=>(
+          <button key={t.id} onClick={()=>setObsTab(t.id)}
+            style={{background:"none",border:"none",
+              borderBottom:obsTab===t.id?`2px solid ${C.blue}`:"2px solid transparent",
+              color:obsTab===t.id?C.blue:C.muted,
+              padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:obsTab===t.id?600:400}}>
+            {t.label}
+            {t.id==="security"&&highSec>0&&(
+              <span style={{marginLeft:6,background:C.red,color:"#fff",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{highSec}</span>
+            )}
+          </button>
         ))}
-        {!error&&history.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No run history yet.</div>}
       </div>
+
+      {error&&<ErrMsg message={error} onRetry={obsTab==="runs"?loadRuns:loadSecurity}/>}
+      {loading&&<Spinner/>}
+
+      {/* ── Pipeline Runs tab ── */}
+      {!loading&&obsTab==="runs"&&(
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
+            <Scorecard label="Total Runs" value={history.length}/>
+            <Scorecard label="Approved" value={approved} sub={`${autoApp} auto`}/>
+            <Scorecard label="Rejected" value={rejected}/>
+            <Scorecard label="Avg Confidence" value={fmt.pct(avgConf*100)}/>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {history.map(run=>{
+              const det = runDetail[run.runID];
+              const isOpen = expanded===run.runID;
+              const dc = decColor(run.decision||run.status);
+              const queries = det?.queries?(typeof det.queries==="string"?JSON.parse(det.queries):det.queries):null;
+              const errors  = det?.errors ?(typeof det.errors==="string" ?JSON.parse(det.errors) :det.errors) :[];
+              return (
+                <div key={run.runID} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden"}}>
+                  <div onClick={()=>toggleRun(run.runID)}
+                    style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:16,
+                      alignItems:"center",padding:"12px 16px",cursor:"pointer"}}>
+                    <div>
+                      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:3}}>
+                        <span style={{fontSize:13,fontWeight:600,color:C.text}}>{fmt.label(run.reportType)}</span>
+                        {run.supplierID&&<Badge>{run.supplierID}</Badge>}
+                        <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:`${dc}18`,color:dc,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                          {run.decision==="auto_approved"?"Auto":run.decision==="edited_and_approved"?"Edited":run.decision||run.status}
+                        </span>
+                      </div>
+                      <div style={{fontSize:11,color:C.muted}}>
+                        {new Date(run.startedAt).toLocaleString("en-GB")} · {run.reviewer||"system"}
+                        {run.reason&&<span style={{color:C.red}}> · {run.reason}</span>}
+                      </div>
+                    </div>
+                    <ConfMeter value={run.confidence||0}/>
+                    <span style={{fontSize:11,fontFamily:"monospace",color:C.muted}}>{(run.runID||"").slice(0,8)}</span>
+                    <span style={{fontSize:12,color:C.muted}}>{isOpen?"▲":"▼"}</span>
+                  </div>
+
+                  {isOpen&&(
+                    <div style={{borderTop:`1px solid ${C.border}`,padding:"16px 18px"}}>
+                      {!det&&<Spinner/>}
+                      {det&&(
+                        <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+                          {det.goal&&(
+                            <div>
+                              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Goal</div>
+                              <div style={{fontSize:13,color:C.text,lineHeight:1.5}}>{det.goal}</div>
+                            </div>
+                          )}
+
+                          {/* Diagnosis panel — the "so what" */}
+                          {errors.length>0&&(
+                            <div>
+                              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Issues & Diagnosis</div>
+                              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                                {errors.map((e,i)=>{
+                                  const diag = diagnoseError(e);
+                                  return (
+                                    <div key={i} style={{borderRadius:8,border:`1px solid ${diag?`${diagColor(diag)}40`:C.border}`,overflow:"hidden"}}>
+                                      <div style={{padding:"8px 12px",background:diag?`${diagColor(diag)}0a`:C.surface,fontSize:12,color:C.text}}>{e}</div>
+                                      {diag&&(
+                                        <div style={{padding:"8px 12px",borderTop:`1px solid ${diagColor(diag)}30`,display:"flex",flexDirection:"column",gap:4}}>
+                                          <div style={{display:"flex",gap:12,fontSize:11}}>
+                                            <span style={{color:C.muted}}>Node: <strong style={{color:C.text}}>{diag.node}</strong></span>
+                                            <span style={{color:C.muted}}>Root cause: <strong style={{color:diagColor(diag)}}>{diag.rootCause}</strong></span>
+                                          </div>
+                                          <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>→ {diag.action}</div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Validation results */}
+                          {det.validationResults?.length>0&&(
+                            <div>
+                              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>Validation Checks</div>
+                              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                                {det.validationResults.map((v,i)=>(
+                                  <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 10px",
+                                    background:v.passed?`${C.green}0e`:`${C.red}0e`,
+                                    border:`1px solid ${v.passed?C.green:C.red}30`,borderRadius:6}}>
+                                    <span style={{fontSize:12,fontWeight:700,color:v.passed?C.green:C.red}}>{v.passed?"✓":"✗"}</span>
+                                    <span style={{fontSize:12,color:C.text,flex:1}}>{v.metricName}</span>
+                                    {!v.passed&&<span style={{fontSize:11,color:C.muted}}>Expected {v.expectedValue} · Got {v.reportedValue} · {v.deviationPct?.toFixed(1)}% deviation</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* SQL */}
+                          {queries&&Object.keys(queries).length>0&&(
+                            <div>
+                              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>SQL Executed</div>
+                              {Object.entries(queries).map(([table,sql])=>(
+                                <details key={table} style={{marginBottom:6}}>
+                                  <summary style={{fontSize:12,color:C.blue,cursor:"pointer",fontWeight:600}}>{table}</summary>
+                                  <pre style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"10px 12px",fontSize:11,color:C.muted,overflow:"auto",whiteSpace:"pre-wrap",margin:"6px 0 0",fontFamily:"monospace"}}>{typeof sql==="string"?sql:JSON.stringify(sql,null,2)}</pre>
+                                </details>
+                              ))}
+                            </div>
+                          )}
+
+                          {det.selectedTables&&(
+                            <div>
+                              <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Tables Used</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {(typeof det.selectedTables==="string"?JSON.parse(det.selectedTables):det.selectedTables).map(t=>(
+                                  <Badge key={t}>{t}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!error&&history.length===0&&<div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>No run history yet.</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Security Log tab ── */}
+      {!loading&&obsTab==="security"&&(
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+            <span style={{fontSize:12,color:C.muted}}>Severity:</span>
+            {["ALL","HIGH","MEDIUM","LOW"].map(s=>(
+              <button key={s} onClick={()=>setSevFilter(s)}
+                style={{background:sevFilter===s?(s==="HIGH"?C.red:s==="MEDIUM"?C.amber:s==="LOW"?C.muted:C.blue):"none",
+                  border:`1px solid ${s==="HIGH"?C.red:s==="MEDIUM"?C.amber:s==="LOW"?C.muted:C.border}`,
+                  color:sevFilter===s?"#fff":(s==="HIGH"?C.red:s==="MEDIUM"?C.amber:C.muted),
+                  borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+                {s}
+              </button>
+            ))}
+            <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>{filteredEvents.length} event{filteredEvents.length!==1?"s":""}</span>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {filteredEvents.map((ev,i)=>{
+              const diag = diagnoseSecurityEvent(ev);
+              return (
+                <div key={ev.eventID||i} style={{background:C.surface,border:`1px solid ${diag?.isFalsePositive?C.border:`${sevColor(ev.severity)}40`}`,borderRadius:8,overflow:"hidden"}}>
+                  <div style={{padding:"12px 16px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
+                      <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,
+                        background:`${sevColor(ev.severity)}18`,color:sevColor(ev.severity)}}>
+                        {ev.severity}
+                      </span>
+                      {diag?.isFalsePositive&&(
+                        <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,
+                          background:`${C.muted}18`,color:C.muted}}>FALSE POSITIVE</span>
+                      )}
+                      <span style={{fontSize:13,fontWeight:600,color:C.text}}>{ev.eventType?.replace(/_/g," ")}</span>
+                      <span style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>{ev.timestamp?new Date(ev.timestamp).toLocaleString("en-GB"):""}</span>
+                    </div>
+                    <div style={{fontSize:12,color:C.text,marginBottom:8,lineHeight:1.5}}>{ev.detail}</div>
+
+                    {/* Diagnosis */}
+                    {diag&&(
+                      <div style={{padding:"10px 12px",background:diag.isFalsePositive?`${C.muted}0a`:`${sevColor(ev.severity)}0a`,
+                        border:`1px solid ${diag.isFalsePositive?C.border:`${sevColor(ev.severity)}30`}`,
+                        borderRadius:6,marginBottom:8}}>
+                        <div style={{display:"flex",gap:16,fontSize:11,marginBottom:4}}>
+                          <span style={{color:C.muted}}>Node: <strong style={{color:C.text}}>{diag.node}</strong></span>
+                          <span style={{color:C.muted}}>Root cause: <strong style={{color:diag.isFalsePositive?C.muted:sevColor(ev.severity)}}>{diag.rootCause}</strong></span>
+                        </div>
+                        <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>→ {diag.action}</div>
+                      </div>
+                    )}
+
+                    <div style={{display:"flex",gap:12,fontSize:11,color:C.muted,flexWrap:"wrap"}}>
+                      {ev.sourceNode&&<span>Node: <strong>{ev.sourceNode}</strong></span>}
+                      {ev.runID&&<span>Run: <strong>{ev.runID.slice(0,8)}</strong></span>}
+                      {ev.userUID&&<span>User: <strong>{ev.userUID.slice(0,8)}</strong></span>}
+                    </div>
+                  </div>
+                  {ev.rawContent&&(
+                    <details style={{fontSize:11,padding:"0 16px 12px"}}>
+                      <summary style={{color:C.muted,cursor:"pointer"}}>SQL that triggered this event</summary>
+                      <pre style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",fontSize:11,color:C.muted,overflow:"auto",whiteSpace:"pre-wrap",margin:"6px 0 0",fontFamily:"monospace"}}>{ev.rawContent}</pre>
+                    </details>
+                  )}
+                </div>
+              );
+            })}
+            {filteredEvents.length===0&&(
+              <div style={{textAlign:"center",padding:60,color:C.muted,fontSize:13}}>
+                {events.length===0?"No security events recorded yet.":"No events match the selected filter."}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

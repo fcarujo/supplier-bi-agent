@@ -580,6 +580,41 @@ def get_history(limit: int = 50, user: AuthUser = Depends(require_reporter)):
     """).result())
     return {"history": [_row_to_dict(r) for r in rows], "total": len(rows)}
 
+# ── GET /api/observability/security  (internal: admin + demo) ────────────────
+
+@app.get("/api/observability/security")
+def get_security_events(
+    limit:    int = 100,
+    severity: str = None,
+    user:     AuthUser = Depends(require_internal),
+):
+    """
+    Returns security events from the security_events table.
+    Optionally filter by severity: HIGH, MEDIUM, LOW.
+    """
+    client = bq()
+
+    severity_filter = ""
+    if severity and severity.upper() in ("HIGH", "MEDIUM", "LOW"):
+        severity_filter = f"AND severity = '{severity.upper()}'"
+
+    rows = list(client.query(f"""
+        SELECT
+            eventID, timestamp, runID, userUID, userRole,
+            eventType, severity, detail, rawContent,
+            endpoint, sourceNode
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.security_events`
+        WHERE 1=1 {severity_filter}
+        ORDER BY timestamp DESC
+        LIMIT {limit}
+    """).result())
+
+    return {
+        "events": [_row_to_dict(r) for r in rows],
+        "total":  len(rows),
+    }
+
+
 
 # ── GET /api/suppliers  (internal: admin + business) ──────────────────────────
 
@@ -1290,23 +1325,19 @@ def get_recent_reports(limit: int = 10, user: AuthUser = Depends(require_reporte
 
     # Get recent runs
     run_rows = list(client.query(f"""
-        WITH latest_runs AS (
-            SELECT runID, reportType, audience, supplierID,
-                   status, confidence, policyDecision, goal,
-                   MAX(startedAt) AS startedAt
+        WITH all_runs AS (
+            SELECT
+                runID, reportType, audience, supplierID, goal,
+                status, confidence, policyDecision, startedAt,
+                ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
             FROM `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
             WHERE reportType IN ('adhoc_business','adhoc_supplier')
-            GROUP BY runID, reportType, audience, supplierID, status, confidence, policyDecision
-        ),
-        deduped AS (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY runID ORDER BY startedAt DESC) AS rn
-            FROM latest_runs
         )
         SELECT
-            r.runID, r.reportType, r.audience, r.supplierID,
+            r.runID, r.reportType, r.audience, r.supplierID, r.goal,
             r.status, r.confidence, r.startedAt, r.policyDecision,
             d.decision, d.reviewer, d.reason, d.decidedAt
-        FROM deduped r
+        FROM all_runs r
         LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.human_decisions` d ON r.runID = d.runID
         WHERE r.rn = 1
         ORDER BY r.startedAt DESC
