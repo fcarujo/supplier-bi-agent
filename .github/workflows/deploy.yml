@@ -4,7 +4,9 @@ on:
   push:
     branches: ["main"]
 
-# Only run one deployment at a time
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -27,13 +29,13 @@ jobs:
         run: |
           bandit -r control_plane/ \
             --exclude control_plane/frontend \
-            -l -i --skip B101,B311 -f txt
+            -l -i --configfile .bandit -f txt
 
       - name: Bandit — agent nodes
         run: |
           bandit -r agent/ \
             --exclude agent/.venv \
-            -l -i --skip B101,B311 -f txt
+            -l -i --configfile .bandit -f txt
 
       - name: pip-audit — control plane
         run: |
@@ -47,7 +49,7 @@ jobs:
   deploy:
     name: Deploy to Cloud Run
     runs-on: ubuntu-latest
-    needs: security        # only runs if security job passes
+    needs: security
     if: success()
 
     steps:
@@ -84,7 +86,6 @@ jobs:
 
       - name: Confirm deployment
         run: |
-          echo "Deployed successfully"
           gcloud run services describe supplier-bi-control-plane \
             --region europe-west2 \
             --project ${{ secrets.GCP_PROJECT }} \
