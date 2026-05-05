@@ -393,7 +393,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
         <div class="phase-dot" style="background:#ec4899"></div>
         <div class="phase-title-wrap">
           <div class="phase-name">Phase 8 — Agent Self-Correction &amp; Feedback Loop</div>
-          <div class="phase-timeline">Planned · rejection as agent input · SQL auto-correction · human feedback loop</div>
+          <div class="phase-timeline">In progress · column allowlist ✓ · PII hard-block ✓ · rate limiter ✓ · security audit trail ✓ · observability UI ✓ · CI pipeline pending</div>
         </div>
         <div class="phase-meta"><div class="phase-count" id="ph-count-7">0 / 9</div><div class="phase-chevron">›</div></div>
       </div>
@@ -414,9 +414,28 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
           <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Pass goal through entire pipeline so each node focuses only on what was asked · eliminate irrelevant sections in ad-hoc reports</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Fix validation false negatives: skip comparisons where ground truth returns 0 due to date filter mismatch</span></li>
         </ul>
-        <div class="group-label">Security &amp; notifications</div>
+        <div class="group-label">Security hardening (completed)</div>
         <ul class="task-list" id="ph-tasks-7d">
-          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Implement BigQuery row-level access policies · supplier queries enforced at data layer not just application layer</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Column allowlist enforcement in pull.py — validate every LLM-generated SQL column against metadata.yaml before execution · five-check validation pipeline</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">PII hard-block: customerEmail, customerName, customerAddress blocked unconditionally regardless of allowlist · precautionary for production readiness</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">_extract_column_references() — SQL parser strips AS aliases and table path fragments to avoid false positives in allowlist enforcement</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Rate limiter: 10 req/min per user on /api/runs and /api/runs/rerun · returns 429 on breach · demo role hard-blocked from all write endpoints</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">security_logger.py: shared module writing to security_events BigQuery table · discover logs injection detections · pull logs column/PII/SQL violations · main logs rate limit breaches</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">/api/observability/security endpoint: returns security_events with severity filter · admin and demo access</span></li>
+        </ul>
+        <div class="group-label">Observability UI (completed)</div>
+        <ul class="task-list" id="ph-tasks-7e">
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Observability tab split into Pipeline Runs and Security Log sub-tabs</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Pipeline Runs: clickable rows expand to show goal, policy decision, issues with diagnosis layer (node, root cause, recommended action), validation checks, SQL executed, tables used</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Security Log: events with severity filter, diagnosis layer per event type, false positive labelling for table path fragments and computed aliases</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" checked onchange="taskChanged()"/><span class="task-text">Recent Reports query fixed: GROUP BY caused duplicate rows · fixed with ROW_NUMBER() OVER (PARTITION BY runID)</span></li>
+        </ul>
+        <div class="group-label">Pending</div>
+        <ul class="task-list" id="ph-tasks-7f">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Node timing + token counts telemetry via shared telemetry.py module · agent_runs columns nodeTiming, tokenCounts, sqlRetries, validationQueries</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Agent Performance sub-tab in Observability · requires telemetry data flowing first</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">CI pipeline: GitHub Actions with Bandit (Python static security analysis) and pip-audit (dependency vulnerability scan) on every push</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Production security: BigQuery row-level policies · service account per node · column-level PII security · LangSmith tracing</span></li>
           <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Add notification system · email or Slack alert when report is shared with supplier or critical insight is flagged</span></li>
         </ul>
       </div>

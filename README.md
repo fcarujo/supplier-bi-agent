@@ -145,13 +145,17 @@ Runs weekly. Detects anomalies and trends across the portfolio without being ask
 
 Three independent layers — an attacker must bypass all three simultaneously.
 
-**Layer 1 — Input sanitiser:** Every goal string is scanned for prompt injection patterns before reaching the LLM. Detections are flagged to the audit trail.
+**Layer 1 — Input sanitiser:** Every goal string is scanned for prompt injection patterns before reaching the LLM. Detections are flagged to the audit trail and written to the `security_events` BigQuery table.
 
-**Layer 2 — Column allowlist and SQL validator:** Every SQL query is validated before execution. No dangerous operations, no SELECT *, only allowed columns. Supplier-scoped reports have `WHERE supplierID = 'SUPXXX'` injected automatically. `netRevenue` and `customerID` are permanently blocked columns regardless of report type.
+**Layer 2 — Column allowlist and SQL validator:** Every LLM-generated SQL query is validated before execution across five checks: dangerous operations (DROP/DELETE/UPDATE etc.), correct table reference, no SELECT *, PII hard-block, and column allowlist enforcement. The allowlist check parses the SQL to extract source column references (stripping AS aliases and table path fragments) and rejects any column not defined in `metadata.yaml` for that table. PII columns (`customerEmail`, `customerName`, `customerAddress`) are hard-blocked unconditionally regardless of allowlist configuration. Note: these columns do not exist in the current synthetic dataset — the enforcement is precautionary for production readiness. Supplier-scoped reports have `WHERE supplierID = 'SUPXXX'` injected automatically.
 
 **Layer 3 — IAM:** The service account has read-only access to the allowed dataset only. Even a malicious query that bypasses layers 1 and 2 is rejected at the infrastructure level.
 
-**API rate limiting:** `POST /api/runs` and `POST /api/runs/rerun` are rate-limited to 10 requests per minute per user. Returns 429 on breach.
+**API rate limiting:** `POST /api/runs` and `POST /api/runs/rerun` are rate-limited to 10 requests per minute per user. Returns 429 on breach. Demo role is hard-blocked from all write endpoints.
+
+**Security audit trail:** All security events are written to the `security_events` BigQuery table with timestamp, user, severity (HIGH/MEDIUM/LOW), event type, source node, and raw content. Viewable in the Control Plane Observability tab under Security Log with severity filtering and a diagnosis layer that identifies root cause and recommended action per event. False positives (e.g. table path fragments misidentified as column names) are labelled automatically.
+
+**Production security considerations (not implemented — portfolio scope):** BigQuery row-level access policies enforced at the data layer; separate service accounts per node with minimum permissions (reader for Pull/Validate, writer for Review/Publish) using credential impersonation; column-level security on PII fields; LangSmith tracing for full LLM call observability.
 
 ---
 
@@ -298,4 +302,4 @@ supplier-bi-agent/
 | 5 — Reporting, ad-hoc & NL BI | ✅ Complete | React dashboards, ad-hoc reports, conversational query, Cloud Run |
 | 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Insight Agent |
 | 7 — Supplier portal & demo | ✅ Complete | Firebase Auth · agentic-intel.de · supplier portal · multi-role access · landing page · demo account · rejection feedback loop · dashboard cleanup · nav reorganisation · report title field |
-| 8 — Security hardening | ⬜ Planned | BigQuery row-level policies · service account per node · column-level PII security · LangSmith tracing · CI security pipeline |
+| 8 — Security hardening | 🔄 In progress | Column allowlist enforcement · PII blocklist · rate limiter · security audit trail · observability UI with diagnosis layer · CI pipeline pending |
