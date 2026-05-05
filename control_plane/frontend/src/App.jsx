@@ -2457,8 +2457,8 @@ function LandingPage({ onSignIn, onDemoLogin }) {
   const STEPS = [
     { icon:"🎯", title:"You ask a question", color:"#2563eb",
       desc:"Type a plain-English question, no SQL or technical knowledge needed. For example: Show me SUP004 sales in 2026 vs the same period last year." },
-    { icon:"🤖", title:"Six AI agents take over", color:"#2563eb",
-      desc:"Six specialised agents each handle one job in sequence. Discover picks the right data tables, Pull writes and runs the database query, Analyse scores the findings, Generate writes the report, Validate fact-checks it, and Review applies policy rules." },
+    { icon:"🤖", title:"11 AI agents take over", color:"#2563eb",
+      desc:"Eleven specialised agents each handle one job in sequence. Discover picks the right data tables, Pull writes and runs the database query, Analyse scores the findings, Generate writes the report, Validate fact-checks it, and Review applies policy rules." },
     { icon:"⚙️", title:"SQL is written and self-corrected", color:"#2563eb",
       desc:"The Pull agent writes precise SQL for BigQuery. If the query fails, it reads the exact error, corrects the SQL automatically, and retries up to 2 times before escalating." },
     { icon:"📊", title:"Three ways a report reaches you", color:"#2563eb",
@@ -2471,7 +2471,7 @@ function LandingPage({ onSignIn, onDemoLogin }) {
 
   const TECH = [
     { name:"LangGraph",     color:"#2563eb", role:"Agent pipeline orchestration",
-      desc:"Manages the six-agent pipeline as a stateful graph. Each node passes context to the next and handles retries, state persistence, and branching logic." },
+      desc:"Manages the eleven-agent pipeline as a stateful graph. Each node passes context to the next and handles retries, state persistence, and branching logic." },
     { name:"Claude Sonnet 4", color:"#2563eb", role:"AI reasoning engine",
       desc:"Anthropic's Claude powers every agent node that requires reasoning: writing SQL, interpreting data, scoring confidence, generating report narratives, and self-correcting errors." },
     { name:"BigQuery",      color:"#2563eb", role:"Data warehouse",
@@ -2583,13 +2583,13 @@ function LandingPage({ onSignIn, onDemoLogin }) {
             Multi-agent AI system, built end-to-end
           </div>
           <h1 style={{fontSize:44,fontWeight:800,lineHeight:1.1,letterSpacing:"-0.03em",margin:"0 0 24px",color:"#0f172a"}}>
-            Six AI agents.<br/><span style={{color:"#2563eb"}}>One intelligence</span><br/>platform.
+            Eleven AI agents.<br/><span style={{color:"#2563eb"}}>One intelligence</span><br/>platform.
           </h1>
           <p style={{...S.body, margin:"0 0 12px", maxWidth:480}}>
             A portfolio project demonstrating what is possible with modern AI agent frameworks. A fully working supplier intelligence platform, from data warehouse to agent pipeline to human review queue to supplier portal.
           </p>
           <p style={{...S.body, margin:"0 0 12px", maxWidth:480}}>
-            Ask a question in plain English. Six AI agents query the data, analyse the results, write a structured report, and route it for human review, all automatically.
+            Ask a question in plain English. Eleven AI agents query the data, analyse the results, write a structured report, and route it for human review, all automatically.
           </p>
           <p style={{...S.body, margin:"0 0 32px", maxWidth:480, color:"#2563eb", fontWeight:500}}>
             If you are looking for someone that brings business, operations and AI knowledge, let's connect.
