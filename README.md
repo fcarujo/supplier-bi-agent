@@ -143,27 +143,35 @@ Runs weekly. Detects anomalies and trends across the portfolio without being ask
 
 ## Security Architecture
 
-Three independent layers — an attacker must bypass all three simultaneously.
+**Implemented — application-layer controls:**
 
-**Layer 1 — Input sanitiser:** Every goal string is scanned for prompt injection patterns before reaching the LLM. Detections are flagged to the audit trail and written to the `security_events` BigQuery table.
+**Layer 1 — Input sanitiser:** Every goal string is scanned for prompt injection patterns before reaching the LLM. Customer comment data is always passed as a separate user-turn block, never interpolated into the system prompt, protecting against indirect injection from data. All detections are written to the `security_events` BigQuery table with timestamp, user ID, severity, and raw content.
 
-**Layer 2 — Column allowlist and SQL validator:** Every LLM-generated SQL query is validated before execution across five checks: dangerous operations (DROP/DELETE/UPDATE etc.), correct table reference, no SELECT *, PII hard-block, and column allowlist enforcement. The allowlist check parses the SQL to extract source column references (stripping AS aliases and table path fragments) and rejects any column not defined in `metadata.yaml` for that table. PII columns (`customerEmail`, `customerName`, `customerAddress`) are hard-blocked unconditionally regardless of allowlist configuration. Note: these columns do not exist in the current synthetic dataset — the enforcement is precautionary for production readiness. Supplier-scoped reports have `WHERE supplierID = 'SUPXXX'` injected automatically.
+**Layer 2 — Column allowlist and SQL validator:** Every LLM-generated SQL query is validated before execution across five checks: dangerous operations (DROP/DELETE/UPDATE etc.), correct table reference, no SELECT *, PII hard-block, and column allowlist enforcement. The allowlist check parses the SQL, strips AS aliases and table path fragments to eliminate false positives, and rejects any column not defined in `metadata.yaml`. PII columns (`customerEmail`, `customerName`, `customerAddress`) are hard-blocked unconditionally at the code level regardless of any configuration.
 
-**Layer 3 — IAM:** The service account has read-only access to the allowed dataset only. Even a malicious query that bypasses layers 1 and 2 is rejected at the infrastructure level.
+**Layer 3 — IAM:** The service account has read-only access to the allowed dataset. A malicious query that bypasses layers 1 and 2 is rejected at the infrastructure level.
 
-**API rate limiting:** `POST /api/runs` and `POST /api/runs/rerun` are rate-limited to 10 requests per minute per user. Returns 429 on breach. Demo role is hard-blocked from all write endpoints.
+**Additional controls:** API rate limiting (10 req/min per user), demo role hard-blocked from all write endpoints, security audit trail in BigQuery with Security Log UI, CI/CD security gate (Bandit + pip-audit on every push, deployment blocked on failure — 3 real CVEs found and patched during setup), guardrail node between Pull and Analyse, structured output enforcement on all LLM calls.
 
-**Security audit trail:** All security events are written to the `security_events` BigQuery table with timestamp, user, severity (HIGH/MEDIUM/LOW), event type, source node, and raw content. Viewable in the Control Plane Observability tab under Security Log with severity filtering and a diagnosis layer that identifies root cause and recommended action per event. False positives (e.g. table path fragments misidentified as column names) are labelled automatically.
+**Infrastructure security — Phase 10 (planned):** The following controls are designed and will be implemented in Phase 10. They are planned work, not permanently deferred:
 
-**Production security considerations (not implemented — portfolio scope):** BigQuery row-level access policies enforced at the data layer; separate service accounts per node with minimum permissions (reader for Pull/Validate, writer for Review/Publish) using credential impersonation; column-level security on PII fields; LangSmith tracing for full LLM call observability.
+- *Service account per node* — separate read-only account for Pull/Validate, write-only for Review/Publish. Currently all nodes share one service account.
+- *BigQuery column-level security* — PII field protection enforced at the data layer, not just application code.
+- *BigQuery row-level access policies* — supplier data isolation enforced at infrastructure level so a compromised application cannot access cross-supplier data.
+- *Secret Manager* — API key currently passed as Cloud Run environment variable. Phase 10 moves this to Secret Manager with automatic rotation.
+- *Cloud Logging* — structured queryable logs per node replacing print statements. Currently security events go to BigQuery but node execution uses stdout only.
+- *Cloud Monitoring alerts* — automated alerting when token usage or query cost exceeds 2× rolling average. Early detection of runaway agent behaviour.
+- *GCP Security Command Center* — continuous posture monitoring across the project.
 
----
 
 ## Control Plane
 
 **Control Plane tab** — Contains two sub-tabs:
-- *Queue* — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Rejection with reason triggers automatic agent re-run with correction applied.
-- *Observability* — Full run history with confidence scores, decisions, and reviewer names.
+- *Queue* — Pending reports awaiting human decision. Shows confidence meter, validation pass/fail counts, hallucination flags. Audit view with Report / Validation / Policy / Data tabs. Decisions: Approve / Edit & Approve / Reject. Rejection with reason triggers automatic agent re-run with correction applied. Max 2 re-run attempts.
+- *Observability* — Three sub-tabs for agentic governance:
+  - *Pipeline Runs* — Every run is clickable. Expands to show goal, SQL per table, validation results with expected vs actual figures, policy decision, and a diagnosis block per issue identifying which node caused it, root cause, and recommended action.
+  - *Agent Performance* — Auto-approval rate, escalation rate, average confidence by report type over 30 days. Weekly confidence trend. Most common failure patterns with specific actions. All computed from existing data — no additional telemetry required.
+  - *Security Log* — Live view of the `security_events` table with severity filter. Each event shows node, root cause, recommended action, and false positive label where applicable.
 
 **Dashboards**
 - *Business Overview* — Weekly insights banner (digest + severity-rated alerts + 4-week history), 7 scorecards with traffic light legend, incident & return rate trend, resolution cost % trend, top 10 suppliers, category breakdown with portfolio average reference line, resolution mix. Cross-filtering on all charts.
@@ -191,7 +199,7 @@ Standalone portfolio showcase at agentic-intel.de (no login required). Built to 
 
 ## Demo Account
 
-A protected read-only account for recruiters and stakeholders (demo@agentic-intel.de).
+A protected read-only account for recruiters and stakeholders (demo@[domain]).
 
 **What demo can do:**
 - View all dashboards (business overview and supplier account with pre-built SUP001 data)
@@ -302,4 +310,7 @@ supplier-bi-agent/
 | 5 — Reporting, ad-hoc & NL BI | ✅ Complete | React dashboards, ad-hoc reports, conversational query, Cloud Run |
 | 6 — Multi-agent | ✅ Complete | Comment Intelligence, Parallel Scheduler, Insight Agent |
 | 7 — Supplier portal & demo | ✅ Complete | Firebase Auth · agentic-intel.de · supplier portal · multi-role access · landing page · demo account · rejection feedback loop · dashboard cleanup · nav reorganisation · report title field |
-| 8 — Security hardening | 🔄 In progress | Column allowlist enforcement · PII blocklist · rate limiter · security audit trail · observability UI with diagnosis layer · CI pipeline pending |
+| 8 — Security hardening | ✅ Complete | Column allowlist + PII hard-block · rate limiter · security audit trail · CI/CD pipeline · Observability control room (Pipeline Runs, Agent Performance, Security Log) |
+| 9 — Agent quality | ⬜ Planned | Validate date scope fix · policy rules split ad-hoc vs scheduled · confidence calibration · telemetry wiring · LangSmith integration |
+| 10 — Infrastructure security | ⬜ Planned | Service account per node · Secret Manager · BigQuery row/column-level policies · Cloud Logging · Cloud Monitoring alerts |
+| 11 — Notifications & integrations | ⬜ Planned | Email/Slack alerts · supplier notifications · Cloud Scheduler for weekly/monthly cycles |

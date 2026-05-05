@@ -443,6 +443,97 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
     </div>
 
   </div>
+    <div class="phase" data-phase="8">
+      <div class="phase-head" onclick="togglePhase(this)">
+        <div class="phase-dot" style="background:#f59e0b"></div>
+        <div class="phase-title-wrap">
+          <div class="phase-name">Phase 9 — Agent Quality</div>
+          <div class="phase-timeline">Next · validate date scope · policy rules split · confidence scoring · telemetry wiring</div>
+        </div>
+        <div class="phase-meta"><div class="phase-count" id="ph-count-8">0 / 0</div><div class="phase-chevron">›</div></div>
+      </div>
+      <div class="phase-body">
+        <div class="group-label">Validate node — date scope fix</div>
+        <ul class="task-list" id="ph-tasks-8">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Fix validate node date scope — currently compares YTD figures against full-year baselines causing 80%+ deviations and false hallucination flags · implement like-for-like period comparison</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Fix validate node supplier scope — validate uses portfolio-level ground truth when it should use supplier-scoped queries for supplier reports</span></li>
+        </ul>
+        <div class="group-label">Policy engine — report type split</div>
+        <ul class="task-list" id="ph-tasks-8b">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Split required sections by report type — ad-hoc reports should not require Executive Summary, Portfolio Performance, Supplier Rankings which are only relevant for scheduled reports</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Calibrate confidence thresholds per report type — ad-hoc reports consistently score below 0.7 even when data is correct · current thresholds were tuned for scheduled reports</span></li>
+        </ul>
+        <div class="group-label">Telemetry</div>
+        <ul class="task-list" id="ph-tasks-8c">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Wire telemetry.py to nodes incrementally — node_start(), record_tokens(), node_end() already built · add to each node as quality fixes touch them · no bulk changes</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">SQL retry counter in pull.py — track how many auto-correction attempts fire per report type to identify which tables have weak column descriptions</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">LangSmith integration — full LLM call tracing: input, output, token count, latency per node per run · feeds into behavioural eval suite</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">LangSmith eval suite — fixed test cases with known expected outputs for both report audiences · run on every deploy · injection payload tests</span></li>
+        </ul>
+      </div>
+      <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-8" style="width:0%;background:#f59e0b"></div></div>
+    </div>
+
+    <div class="phase" data-phase="9">
+      <div class="phase-head" onclick="togglePhase(this)">
+        <div class="phase-dot" style="background:#ef4444"></div>
+        <div class="phase-title-wrap">
+          <div class="phase-name">Phase 10 — Infrastructure Security</div>
+          <div class="phase-timeline">Planned · service account per node · Secret Manager · Cloud Logging · row-level policies</div>
+        </div>
+        <div class="phase-meta"><div class="phase-count" id="ph-count-9">0 / 0</div><div class="phase-chevron">›</div></div>
+      </div>
+      <div class="phase-body">
+        <div class="group-label">IAM — least privilege per node</div>
+        <ul class="task-list" id="ph-tasks-9">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Create sa-bq-reader service account: BigQuery read-only on supplier_bi dataset · used by Pull and Validate nodes via credential impersonation</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Create sa-bq-writer service account: BigQuery insert-only on agent_runs, pending_reports, security_events, approved_reports · used by Review and Publish nodes</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Implement credential impersonation in Pull, Validate, Review, Publish nodes · each node instantiates BigQuery client with its scoped service account</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">BigQuery column-level security on PII-adjacent fields — enforce at data layer not just application layer</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">BigQuery row-level access policies on orders, incidents, returns tables keyed on supplierID — supplier data isolation enforced at infrastructure not application layer</span></li>
+        </ul>
+        <div class="group-label">Secrets</div>
+        <ul class="task-list" id="ph-tasks-9b">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Move ANTHROPIC_API_KEY from Cloud Run environment variable to GCP Secret Manager · update Cloud Run to pull from Secret Manager at runtime</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Enable automatic key rotation in Secret Manager · update application to handle rotation without downtime</span></li>
+        </ul>
+        <div class="group-label">Observability & alerting</div>
+        <ul class="task-list" id="ph-tasks-9c">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Replace print() statements in all nodes with structured Cloud Logging — queryable, persistent, alertable logs per node with run_id, node_name, audience, supplier_id</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Log all supplier portal access — supplierID, endpoint hit, rows returned, timestamp · feeds compliance audit trail</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Cloud Monitoring alert: flag runs where query cost, row count, or token usage exceeds 2× rolling average · early detection of runaway agent behaviour</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Enable GCP Security Command Center: continuous posture monitoring across the full project</span></li>
+        </ul>
+      </div>
+      <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-9" style="width:0%;background:#ef4444"></div></div>
+    </div>
+
+    <div class="phase" data-phase="10">
+      <div class="phase-head" onclick="togglePhase(this)">
+        <div class="phase-dot" style="background:#8b5cf6"></div>
+        <div class="phase-title-wrap">
+          <div class="phase-name">Phase 11 — Notifications & Integrations</div>
+          <div class="phase-timeline">Planned · email/Slack alerts · supplier notifications · Cloud Scheduler</div>
+        </div>
+        <div class="phase-meta"><div class="phase-count" id="ph-count-10">0 / 0</div><div class="phase-chevron">›</div></div>
+      </div>
+      <div class="phase-body">
+        <div class="group-label">Notifications</div>
+        <ul class="task-list" id="ph-tasks-10">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Email or Slack alert when a report is shared with a supplier — account manager notified on delivery confirmation</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Email or Slack alert when a critical insight is flagged — severity HIGH anomaly detected by Insight Agent triggers immediate notification</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Supplier email notification when their monthly report is available — automated delivery with link to portal</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Security alert: email notification when HIGH severity security event is logged — rate limit breach or PII block triggers immediate alert</span></li>
+        </ul>
+        <div class="group-label">Scheduling</div>
+        <ul class="task-list" id="ph-tasks-10b">
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Weekly business overview: Cloud Scheduler every Monday 08:00 → triggers pipeline automatically · policy engine decides auto-approve or queue</span></li>
+          <li class="task-item"><input type="checkbox" class="task-cb" onchange="taskChanged()"/><span class="task-text">Monthly supplier cycle: Cloud Scheduler 1st of each month → Comment Intelligence then parallel supplier reports</span></li>
+        </ul>
+      </div>
+      <div class="phase-progress"><div class="phase-progress-fill" id="ph-bar-10" style="width:0%;background:#8b5cf6"></div></div>
+    </div>
+
 
   <div class="footer">Checkboxes saved in your browser · open locally to persist state between sessions</div>
 </div>
@@ -676,15 +767,20 @@ function switchTab(name,btn){document.querySelectorAll('.tab-btn').forEach(b=>b.
 function togglePhase(head){head.closest('.phase').classList.toggle('open');}
 function toggleSec(head){head.closest('.sec-card').classList.toggle('open');}
 function taskChanged(){
-  let td=0,ta=0,pd=0;const np=8;
+  let td=0,ta=0,pd=0;const np=11;
+  const suffixes=['','b','c','d','e','f','g'];
   for(let p=0;p<np;p++){
-    const el=document.getElementById('ph-tasks-'+p);if(!el)continue;
-    const cbs=el.querySelectorAll('.task-cb');
-    const done=Array.from(cbs).filter(c=>c.checked).length,all=cbs.length;
+    let done=0,all=0;
+    for(const s of suffixes){
+      const el=document.getElementById('ph-tasks-'+p+s);if(!el)continue;
+      const cbs=el.querySelectorAll('.task-cb');
+      done+=Array.from(cbs).filter(c=>c.checked).length;
+      all+=cbs.length;
+      cbs.forEach(cb=>cb.closest('.task-item').classList.toggle('done',cb.checked));
+    }
     td+=done;ta+=all;if(done===all&&all>0)pd++;
     document.getElementById('ph-count-'+p).textContent=done+' / '+all;
     document.getElementById('ph-bar-'+p).style.width=all?(done/all*100)+'%':'0%';
-    cbs.forEach(cb=>cb.closest('.task-item').classList.toggle('done',cb.checked));
   }  const pct=ta?Math.round(td/ta*100):0;
   document.getElementById('global-bar').style.width=pct+'%';
   document.getElementById('global-pct').textContent=pct+'%';
