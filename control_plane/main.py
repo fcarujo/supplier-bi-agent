@@ -9,6 +9,7 @@ API endpoints are served at /api/*
 Supplier-facing view at /supplier/:id
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -487,8 +488,7 @@ def post_decision(body: DecisionRequest, user: AuthUser = Depends(require_intern
 # ── POST /api/runs/rerun/{run_id} ────────────────────────────────────────────
 
 @app.post("/api/runs/rerun/{run_id}")
-def trigger_rerun(run_id: str, user: AuthUser = Depends(require_reporter)):
-    import threading
+async def trigger_rerun(run_id: str, user: AuthUser = Depends(require_reporter)):
     client = bq()
 
     # Check retry count — max 2
@@ -555,12 +555,26 @@ def trigger_rerun(run_id: str, user: AuthUser = Depends(require_reporter)):
                 date_to     = None,
                 thread_id   = rerun_id,
             )
+            print(f"[api/runs/rerun] Re-run {rerun_id} completed")
         except Exception as e:
             print(f"[api/runs/rerun] Re-run {rerun_id} failed: {e}")
+            # Mark the run as failed so the UI stops polling a dead run
+            try:
+                bq().query(f"""
+                    UPDATE `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+                    SET status = 'failed'
+                    WHERE runID = '{rerun_id}' AND status = 'running'
+                """).result()
+            except Exception:
+                pass
 
-    threading.Thread(target=_rerun, daemon=True).start()
+    # Run the pipeline inside the request lifecycle so Cloud Run keeps the
+    # instance at full CPU until it finishes. A fire-and-forget daemon thread
+    # gets killed when the response returns and CPU is throttled to zero.
     print(f"[api/runs/rerun] Re-run {rerun_id} triggered for run {run_id}")
-    return {"rerunID": rerun_id, "originalRunID": run_id, "status": "running"}
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _rerun)
+    return {"rerunID": rerun_id, "originalRunID": run_id, "status": "completed"}
 
 
 # ── GET /api/history  (admin only) ────────────────────────────────────────────
@@ -1025,9 +1039,7 @@ def get_supplier_dashboard(
 # ── POST /api/runs  (admin only) ──────────────────────────────────────────────
 
 @app.post("/api/runs")
-def trigger_run(body: RunRequest, user: AuthUser = Depends(require_reporter)):
-    import threading
-
+async def trigger_run(body: RunRequest, user: AuthUser = Depends(require_reporter)):
     run_id = str(uuid.uuid4())
 
     def _run():
@@ -1042,11 +1054,24 @@ def trigger_run(body: RunRequest, user: AuthUser = Depends(require_reporter)):
                 date_to     = body.dateTo,
                 thread_id   = run_id,
             )
+            print(f"[api/runs] Run {run_id} completed")
         except Exception as e:
             print(f"[api/runs] Run {run_id} failed: {e}")
+            try:
+                bq().query(f"""
+                    UPDATE `{GCP_PROJECT}.{BQ_DATASET}.agent_runs`
+                    SET status = 'failed'
+                    WHERE runID = '{run_id}' AND status = 'running'
+                """).result()
+            except Exception:
+                pass
 
-    threading.Thread(target=_run, daemon=True).start()
-    return {"runID": run_id, "status": "running"}
+    # Run inside the request lifecycle so Cloud Run keeps the instance at full
+    # CPU until the pipeline finishes. A daemon thread is killed when the
+    # response returns and CPU is throttled.
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _run)
+    return {"runID": run_id, "status": "completed"}
 
 
 # ── POST /api/ask/session  (internal: admin + business) ───────────────────────
