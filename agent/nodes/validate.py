@@ -202,22 +202,89 @@ def get_ground_truth(
     return ground_truth
 
 
+def get_ground_truth_for_year(
+    bq_client:   bigquery.Client,
+    project:     str,
+    dataset:     str,
+    year:        str,
+    supplier_id: Optional[str],
+) -> dict:
+    """
+    Ground truth scoped to a single calendar year via EXTRACT(YEAR ...).
+    Used for multi-period ad-hoc reports where by_period splits figures by year.
+    Scope is derived from the year itself — never regex-scraped from SQL — so it
+    matches the report's per-year figures exactly.
+    """
+    sup_o = f"AND o.supplierID = '{supplier_id}'" if supplier_id else ""
+    sup_p = f"AND supplierID = '{supplier_id}'" if supplier_id else ""
+    gt = {}
+
+    try:
+        row = list(bq_client.query(f"""
+            SELECT
+                COUNT(o.orderID) AS total_orders,
+                ROUND(AVG(CASE WHEN o.hasIncident THEN 1.0 ELSE 0.0 END) * 100, 2) AS incident_rate_pct,
+                ROUND(AVG(CASE WHEN o.hasReturn   THEN 1.0 ELSE 0.0 END) * 100, 2) AS return_rate_pct,
+                ROUND(SUM(o.grossRevenue), 2) AS total_gross_revenue
+            FROM `{project}.{dataset}.orders` o
+            WHERE EXTRACT(YEAR FROM o.orderDate) = {int(year)} {sup_o}
+        """).result())[0]
+        gt["total_orders"]        = float(row["total_orders"] or 0)
+        gt["incident_rate_pct"]   = float(row["incident_rate_pct"] or 0)
+        gt["return_rate_pct"]     = float(row["return_rate_pct"] or 0)
+        gt["total_gross_revenue"] = float(row["total_gross_revenue"] or 0)
+    except Exception as e:
+        print(f"  [validate] WARNING — year {year} orders ground truth failed: {e}")
+
+    try:
+        row = list(bq_client.query(f"""
+            SELECT ROUND(SUM(i.resolutionCost), 2) AS total_resolution_cost
+            FROM `{project}.{dataset}.incidents` i
+            INNER JOIN `{project}.{dataset}.orders` o ON i.orderID = o.orderID
+            WHERE EXTRACT(YEAR FROM o.orderDate) = {int(year)} {sup_o}
+        """).result())[0]
+        gt["total_resolution_cost"] = float(row["total_resolution_cost"] or 0)
+    except Exception as e:
+        print(f"  [validate] WARNING — year {year} resolution cost ground truth failed: {e}")
+
+    return gt
+
+
 # ── Metric extractor ──────────────────────────────────────────────────────────
 
-def extract_reported_metrics(narrative: str, analysis: dict) -> dict:
+def _metrics_from_bucket(bucket: dict) -> dict:
+    """
+    Pull comparable metrics out of an analysis metrics bucket.
+    Handles both the 'overall' shape (overall_incident_rate_pct) and the
+    per-period shape from by_period (incident_rate_pct).
+    """
     reported = {}
+    if not isinstance(bucket, dict):
+        return reported
 
-    overall = analysis.get("overall_metrics", {})
-    if overall.get("overall_incident_rate_pct"):
-        reported["incident_rate_pct"] = float(overall["overall_incident_rate_pct"])
-    if overall.get("overall_return_rate_pct"):
-        reported["return_rate_pct"] = float(overall["overall_return_rate_pct"])
-    if overall.get("total_resolution_cost"):
-        reported["total_resolution_cost"] = float(overall["total_resolution_cost"])
-    if overall.get("total_gross_revenue"):
-        reported["total_gross_revenue"] = float(overall["total_gross_revenue"])
-    if overall.get("total_orders"):
-        reported["total_orders"] = float(overall["total_orders"])
+    # incident rate — overall uses 'overall_incident_rate_pct', period uses 'incident_rate_pct'
+    inc = bucket.get("overall_incident_rate_pct", bucket.get("incident_rate_pct"))
+    if inc is not None:
+        reported["incident_rate_pct"] = float(inc)
+
+    ret = bucket.get("overall_return_rate_pct", bucket.get("return_rate_pct"))
+    if ret is not None:
+        reported["return_rate_pct"] = float(ret)
+
+    if bucket.get("total_resolution_cost") is not None:
+        reported["total_resolution_cost"] = float(bucket["total_resolution_cost"])
+    if bucket.get("total_gross_revenue") is not None:
+        reported["total_gross_revenue"] = float(bucket["total_gross_revenue"])
+    if bucket.get("total_orders") is not None:
+        reported["total_orders"] = float(bucket["total_orders"])
+
+    return reported
+
+
+def extract_reported_metrics(narrative: str, analysis: dict) -> dict:
+    # FIX: analyse.py emits 'overall', not 'overall_metrics'. The old key never
+    # matched, so this silently fell through to regex every time.
+    reported = _metrics_from_bucket(analysis.get("overall", {}))
 
     if "incident_rate_pct" not in reported:
         matches = re.findall(
@@ -343,62 +410,42 @@ def validate_node(state: dict) -> dict:
 
     bq_client   = bigquery.Client(project=project)
     all_results = []
+    summary_ground_truth = {}
 
-    # ── Determine date filter matching the report's actual scope ──────────────
-    date_filter = _get_date_filter(state, config)
-    print(f"  [validate] Using date filter: {date_filter}")
-
-    # ── Get ground truth from BigQuery ────────────────────────────────────────
-    print("  [validate] Querying BigQuery for ground truth metrics...")
-    ground_truth = get_ground_truth(
-        bq_client   = bq_client,
-        project     = project,
-        dataset     = dataset,
-        report_type = report_type,
-        supplier_id = supplier_id,
-        date_filter = date_filter,
-        queries     = queries,
-    )
-    print(f"  [validate] Ground truth: {ground_truth}")
-
-    # ── Extract reported metrics ──────────────────────────────────────────────
-    reported_metrics = extract_reported_metrics(narrative, analysis)
-    print(f"  [validate] Reported metrics: {reported_metrics}")
-
-    # ── Compare metrics ───────────────────────────────────────────────────────
-    DEVIATION_THRESHOLD  = 10.0
+    DEVIATION_THRESHOLD     = 10.0
     HALLUCINATION_THRESHOLD = 20.0
 
     metric_map = {
-        "incident_rate_pct":     "Overall incident rate (%)",
-        "return_rate_pct":       "Overall return rate (%)",
-        "total_resolution_cost": "Total resolution cost ($)",
-        "total_gross_revenue":   "Total gross revenue ($)",
-        "total_orders":          "Total orders",
+        "incident_rate_pct":     "incident rate (%)",
+        "return_rate_pct":       "return rate (%)",
+        "total_resolution_cost": "total resolution cost ($)",
+        "total_gross_revenue":   "total gross revenue ($)",
+        "total_orders":          "total orders",
     }
 
-    for metric_key, metric_label in metric_map.items():
-        expected = ground_truth.get(metric_key)
-        reported = reported_metrics.get(metric_key)
+    def _compare(metric_key, label_prefix, expected, reported):
+        """Compare one metric. Returns a validation result dict."""
+        label = f"{label_prefix} {metric_map[metric_key]}".strip()
 
+        # Could not compare — soft warning (route to queue, never escalate)
         if expected is None or reported is None:
-            all_results.append({
+            return {
                 "validation_id":     str(uuid.uuid4()),
                 "metric_name":       metric_key,
                 "expected_value":    expected,
                 "reported_value":    reported,
                 "deviation_pct":     None,
-                "passed":            True,
+                "passed":            False,
+                "soft_warning":      True,
                 "hallucination_flag":False,
-                "details":           f"{metric_label}: could not compare — "
-                                     f"expected={expected}, reported={reported}",
-            })
-            continue
+                "details":           f"{label}: could not compare — "
+                                     f"expected={expected}, reported={reported} (soft warning)",
+            }
 
-        # If ground truth is 0 but report has a value, likely a date filter mismatch
-        # Skip rather than flagging as 100% deviation — avoids false negatives
+        # Ground truth 0 but report has a value — scope mismatch, skip (no flag)
         if expected == 0 and reported > 0:
-            all_results.append({
+            print(f"  [validate] SKIP {label}: ground truth=0, reported={reported}")
+            return {
                 "validation_id":     str(uuid.uuid4()),
                 "metric_name":       metric_key,
                 "expected_value":    expected,
@@ -406,20 +453,23 @@ def validate_node(state: dict) -> dict:
                 "deviation_pct":     None,
                 "passed":            True,
                 "hallucination_flag":False,
-                "details":           f"{metric_label}: ground truth returned 0 — "
-                                     f"possible date filter mismatch, skipping comparison",
-            })
-            print(f"  [validate] SKIP {metric_label}: ground truth=0, reported={reported} — date filter mismatch suspected")
-            continue
+                "details":           f"{label}: ground truth returned 0 — "
+                                     f"possible scope mismatch, skipping",
+            }
 
         deviation        = calculate_deviation(expected, reported)
         passed           = deviation <= DEVIATION_THRESHOLD
         is_hallucination = deviation > HALLUCINATION_THRESHOLD
-
         status = "✓" if passed else f"✗ ({deviation:.1f}% deviation)"
-        print(f"  [validate] {status} {metric_label}: expected={expected}, reported={reported}")
+        print(f"  [validate] {status} {label}: expected={expected}, reported={reported}")
 
-        all_results.append({
+        if is_hallucination:
+            errors.append(
+                f"Potential hallucination on {label}: expected {expected}, "
+                f"reported {reported} ({deviation:.1f}% deviation)"
+            )
+
+        return {
             "validation_id":     str(uuid.uuid4()),
             "metric_name":       metric_key,
             "expected_value":    expected,
@@ -427,14 +477,59 @@ def validate_node(state: dict) -> dict:
             "deviation_pct":     round(deviation, 2),
             "passed":            passed,
             "hallucination_flag":is_hallucination,
-            "details":           f"{metric_label}: expected {expected}, "
+            "details":           f"{label}: expected {expected}, "
                                  f"reported {reported} ({deviation:.1f}% deviation)",
-        })
+        }
 
-        if is_hallucination:
-            errors.append(
-                f"Potential hallucination on {metric_key}: "
-                f"expected {expected}, reported {reported} ({deviation:.1f}% deviation)"
+    # ── Decide validation strategy ────────────────────────────────────────────
+    # If analyse produced a per-year breakdown (multi-period ad-hoc report),
+    # validate each year against year-scoped ground truth — like-for-like.
+    # Otherwise use the single-scope path with the report's actual date window.
+    by_period = analysis.get("by_period") or {}
+    year_buckets = {
+        y: b for y, b in by_period.items()
+        if re.fullmatch(r"\d{4}", str(y)) and isinstance(b, dict)
+    }
+
+    if year_buckets:
+        print(f"  [validate] Per-period validation across years: {sorted(year_buckets)}")
+        for year in sorted(year_buckets):
+            bucket   = year_buckets[year]
+            reported = _metrics_from_bucket(bucket)
+            print(f"  [validate] Year {year} reported: {reported}")
+            gt = get_ground_truth_for_year(
+                bq_client   = bq_client,
+                project     = project,
+                dataset     = dataset,
+                year        = year,
+                supplier_id = supplier_id,
+            )
+            print(f"  [validate] Year {year} ground truth: {gt}")
+            summary_ground_truth[year] = gt
+            for metric_key in metric_map:
+                all_results.append(
+                    _compare(metric_key, year, gt.get(metric_key), reported.get(metric_key))
+                )
+    else:
+        # Single-scope path (scheduled reports, single-period ad-hoc)
+        date_filter = _get_date_filter(state, config)
+        print(f"  [validate] Single-scope validation, date filter: {date_filter}")
+        ground_truth = get_ground_truth(
+            bq_client   = bq_client,
+            project     = project,
+            dataset     = dataset,
+            report_type = report_type,
+            supplier_id = supplier_id,
+            date_filter = date_filter,
+            queries     = queries,
+        )
+        print(f"  [validate] Ground truth: {ground_truth}")
+        summary_ground_truth = ground_truth
+        reported_metrics = extract_reported_metrics(narrative, analysis)
+        print(f"  [validate] Reported metrics: {reported_metrics}")
+        for metric_key in metric_map:
+            all_results.append(
+                _compare(metric_key, "", ground_truth.get(metric_key), reported_metrics.get(metric_key))
             )
 
     # ── Validate improvement actions ──────────────────────────────────────────
@@ -471,7 +566,7 @@ def validate_node(state: dict) -> dict:
         "failed":              failed_count,
         "hallucination_flags": hallucination_count,
         "pass_rate":           round(pass_rate, 3),
-        "ground_truth":        ground_truth,
+        "ground_truth":        summary_ground_truth,
     }
 
     print(f"  [validate] Complete — {passed_count}/{len(all_results)} checks passed, "
