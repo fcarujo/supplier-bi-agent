@@ -1941,15 +1941,24 @@ function SqlValidator() {
   const [result,setResult]   = useState(null);
   const [loading,setLoading] = useState(false);
   const [error,setError]     = useState(null);
+  const [copied,setCopied]   = useState(false);
 
   const handleValidate = async () => {
     if (!sql.trim()) return;
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true); setError(null); setResult(null); setCopied(false);
     try {
       const d = await apiFetch("/api/sql/validate",{method:"POST",body:JSON.stringify({sql})});
       setResult(d);
     } catch(e) { setError(e.message); }
     finally { setLoading(false); }
+  };
+
+  const handleCopyFormatted = () => {
+    if (!result?.formatted_sql) return;
+    navigator.clipboard.writeText(result.formatted_sql).then(()=>{
+      setCopied(true);
+      setTimeout(()=>setCopied(false), 1500);
+    });
   };
 
   const sevColor = sev => sev==="error" ? C.red : C.amber;
@@ -1983,6 +1992,19 @@ function SqlValidator() {
             <Badge variant={result.valid?"pass":"fail"}>{result.valid?"Valid":"Invalid"}</Badge>
             <span style={{fontSize:13,color:C.muted}}>{result.summary.errors} error{result.summary.errors===1?"":"s"}, {result.summary.warnings} warning{result.summary.warnings===1?"":"s"}</span>
           </div>
+
+          {result.formatted_sql&&(
+            <Card style={{marginBottom:16,padding:0,overflow:"hidden"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em"}}>Formatted (same query, cosmetic only)</span>
+                <button onClick={handleCopyFormatted} style={{background:"none",border:`1px solid ${C.border}`,color:copied?C.green:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>
+                  {copied?"Copied":"Copy"}
+                </button>
+              </div>
+              <pre style={{margin:0,padding:16,fontSize:13,fontFamily:"monospace",lineHeight:1.6,color:C.text,overflowX:"auto",whiteSpace:"pre"}}>{result.formatted_sql}</pre>
+            </Card>
+          )}
+
           {result.issues.length===0 ? (
             <div style={{fontSize:13,color:C.muted}}>No issues found.</div>
           ) : (

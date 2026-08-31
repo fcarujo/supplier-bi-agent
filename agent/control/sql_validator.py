@@ -359,11 +359,23 @@ def check_tables_and_columns(ast, schema: dict, project: str, dataset: str, sql_
     for t in known_tables:
         allowed_columns |= schema[t]
 
+    # SELECT-list aliases (e.g. `SUM(x) AS total`) are valid to reference in
+    # ORDER BY / HAVING — that's standard SQL, not a schema column, so they
+    # must not be flagged as unknown.
+    select_aliases = {
+        sel_expr.alias
+        for select in ast.find_all(exp.Select)
+        for sel_expr in select.expressions
+        if isinstance(sel_expr, exp.Alias) and sel_expr.alias
+    }
+
     if known_tables:
         seen_unknown = set()
         for col in ast.find_all(exp.Column):
             col_name = col.name
             if col_name == "*" or col_name in seen_unknown:
+                continue
+            if col_name in select_aliases:
                 continue
             if col_name not in allowed_columns:
                 seen_unknown.add(col_name)
@@ -382,7 +394,15 @@ def check_tables_and_columns(ast, schema: dict, project: str, dataset: str, sql_
 def check_style(ast, sql_lines: list) -> list:
     issues = []
 
-    if list(ast.find_all(exp.Star)):
+    # Only a bare `*` directly in the SELECT projection list is "SELECT *".
+    # A Star nested inside a function call (COUNT(*), etc.) is a completely
+    # different, legitimate thing and must not trigger this.
+    has_select_star = any(
+        isinstance(sel_expr, exp.Star)
+        for select in ast.find_all(exp.Select)
+        for sel_expr in select.expressions
+    )
+    if has_select_star:
         # The star may be on its own line in a multi-line SELECT list, so
         # don't require SELECT and * on the same line — just find a bare
         # `*` token (not part of a word, not a multiplication like `a*b`).
@@ -414,6 +434,19 @@ def check_style(ast, sql_lines: list) -> list:
 _SEVERITY_ORDER = {"error": 0, "warning": 1}
 
 
+def format_sql(ast) -> str:
+    """
+    Pretty-prints the parsed query: indentation, one clause per section,
+    consistent keyword/function casing. Purely cosmetic — sqlglot round-trips
+    through its own AST, so the formatted output is guaranteed to parse to
+    the exact same query structure as the input. It does not add table
+    qualification, does not rename anything, does not fix any of the issues
+    check_tables_and_columns/check_style/check_relations report — those stay
+    listed separately so the person can fix them by hand.
+    """
+    return ast.sql(dialect=DIALECT, pretty=True, normalize_functions="upper")
+
+
 def validate_user_sql(sql: str) -> dict:
     """
     Validate a user-submitted SQL string. Returns:
@@ -422,6 +455,9 @@ def validate_user_sql(sql: str) -> dict:
             "summary": {"errors": int, "warnings": int},
             "issues": [ {severity, code, message, line}, ... ],  # errors first
             "tables_referenced": [...],
+            "formatted_sql": str | None,  # pretty-printed input, same query,
+                                           # cosmetic only. None if the SQL
+                                           # didn't parse at all.
         }
     """
     schema = _load_schema()
@@ -432,6 +468,7 @@ def validate_user_sql(sql: str) -> dict:
     ast, issues = check_syntax(sql)
 
     tables_referenced = []
+    formatted_sql = None
     if ast is not None:
         issues += check_tables_and_columns(ast, schema, project, dataset, sql_lines)
         issues += check_style(ast, sql_lines)
@@ -439,6 +476,7 @@ def validate_user_sql(sql: str) -> dict:
         tables_referenced = sorted({
             _bare_table_name(t) for t in ast.find_all(exp.Table)
         })
+        formatted_sql = format_sql(ast)
 
     issues.sort(key=lambda i: _SEVERITY_ORDER.get(i["severity"], 99))
 
@@ -450,4 +488,5 @@ def validate_user_sql(sql: str) -> dict:
         "summary": {"errors": error_count, "warnings": warning_count},
         "issues": issues,
         "tables_referenced": tables_referenced,
+        "formatted_sql": formatted_sql,
     }
