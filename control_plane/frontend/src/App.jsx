@@ -1935,6 +1935,77 @@ function AuditView({runSummary,onDecision,onBack,isDemo=false}) {
   );
 }
 
+// ── SQL Validator ────────────────────────────────────────────────────────────
+function SqlValidator() {
+  const [sql,setSql]         = useState("");
+  const [result,setResult]   = useState(null);
+  const [loading,setLoading] = useState(false);
+  const [error,setError]     = useState(null);
+
+  const handleValidate = async () => {
+    if (!sql.trim()) return;
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const d = await apiFetch("/api/sql/validate",{method:"POST",body:JSON.stringify({sql})});
+      setResult(d);
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const sevColor = sev => sev==="error" ? C.red : C.amber;
+
+  return (
+    <div style={{maxWidth:760}}>
+      <div style={{marginBottom:24}}>
+        <h2 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>SQL Validator</h2>
+        <p style={{fontSize:13,color:C.muted,margin:"4px 0 0"}}>Checks syntax, tables, columns, and join safety against the known schema — before anything runs on BigQuery</p>
+      </div>
+      {error&&<ErrMsg message={error} onRetry={handleValidate}/>}
+      <Card style={{display:"flex",flexDirection:"column",gap:16,marginBottom:24}}>
+        <div>
+          <label style={{fontSize:12,color:C.muted,display:"block",marginBottom:6}}>SQL</label>
+          <textarea value={sql} onChange={e=>setSql(e.target.value)} disabled={loading}
+            placeholder={"SELECT supplierID, SUM(grossRevenue) AS total_revenue\nFROM `supplier-bi-agent-2025.supplier_bi.orders`\nGROUP BY supplierID"}
+            rows={10} spellCheck={false}
+            style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,color:C.text,borderRadius:6,padding:"12px",fontSize:13,resize:"vertical",fontFamily:"monospace",lineHeight:1.6,boxSizing:"border-box",opacity:loading?0.5:1}} />
+        </div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontSize:11,color:C.muted,fontFamily:"monospace"}}>tables: orders · incidents · returns · suppliers</span>
+          <button onClick={handleValidate} disabled={loading||!sql.trim()} style={{background:loading?C.surface:"rgba(96,165,250,0.2)",border:`1px solid ${loading?C.border:C.blue}`,color:loading?C.muted:C.blue,borderRadius:7,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:loading?"not-allowed":"pointer",opacity:(loading||!sql.trim())?0.5:1}}>
+            {loading?"Validating...":"Validate"}
+          </button>
+        </div>
+      </Card>
+
+      {result&&(
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+            <Badge variant={result.valid?"pass":"fail"}>{result.valid?"Valid":"Invalid"}</Badge>
+            <span style={{fontSize:13,color:C.muted}}>{result.summary.errors} error{result.summary.errors===1?"":"s"}, {result.summary.warnings} warning{result.summary.warnings===1?"":"s"}</span>
+          </div>
+          {result.issues.length===0 ? (
+            <div style={{fontSize:13,color:C.muted}}>No issues found.</div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {result.issues.map((issue,i)=>(
+                <Card key={i} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"12px 16px"}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:sevColor(issue.severity),marginTop:6,flexShrink:0}}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,color:C.muted,fontFamily:"monospace",textTransform:"lowercase"}}>{issue.code}</div>
+                    <div style={{fontSize:13,color:C.text,marginTop:2,lineHeight:1.5}}>{issue.message}</div>
+                  </div>
+                  {issue.line&&<span style={{fontSize:12,color:C.muted,fontFamily:"monospace",flexShrink:0,whiteSpace:"nowrap"}}>line {issue.line}</span>}
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── Agentic Governance ──────────────────────────────────────────────────────────
 function Observability() {
   const [obsTab,setObsTab]       = useState("runs");
@@ -3043,7 +3114,7 @@ export default function App() {
         {view==="control_plane"&&!selected&&(
           <div>
             <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:24}}>
-              {[{id:"queue",label:"Queue"},{id:"observability",label:"Agentic Governance"}].map(t=>(
+              {[{id:"queue",label:"Queue"},{id:"observability",label:"Agentic Governance"},{id:"sql_validator",label:"SQL Validator"}].map(t=>(
                 <button key={t.id} onClick={()=>setControlTab(t.id)} style={{background:"none",border:"none",borderBottom:controlTab===t.id?`2px solid ${C.blue}`:"2px solid transparent",color:controlTab===t.id?C.blue:C.muted,padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:controlTab===t.id?600:400}}>
                   {t.label}{t.id==="queue"&&queueCount!=null&&<span style={{marginLeft:6,background:C.blue,color:"#fff",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{queueCount}</span>}
                 </button>
@@ -3051,6 +3122,7 @@ export default function App() {
             </div>
             {controlTab==="queue"&&<RunQueue onSelect={run=>{ setSelected(run); setView("audit"); }}/>}
             {controlTab==="observability"&&<Observability/>}
+            {controlTab==="sql_validator"&&<SqlValidator/>}
           </div>
         )}
         {view==="audit"&&selected&&<AuditView runSummary={selected} isDemo={isDemo} onDecision={dec=>{ setDecisions(p=>({...p,[dec.runID]:dec})); }} onBack={()=>{ setSelected(null); setView("control_plane"); setControlTab("queue"); }}/>}

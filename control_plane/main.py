@@ -105,6 +105,7 @@ def require_reporter(user: AuthUser = Depends(get_current_user)) -> AuthUser:
 # ── Agent import — must be at module level so it resolves at container startup
 sys.path.insert(0, "/app")
 from agent.graph import run_agent as _run_agent
+from agent.control.sql_validator import validate_user_sql
 
 app = FastAPI(title="Supplier BI Agent Control Plane")
 
@@ -150,6 +151,9 @@ class AskRequest(BaseModel):
     question:   str
     supplierID: Optional[str] = None
     sessionID:  Optional[str] = None
+
+class SqlValidateRequest(BaseModel):
+    sql: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1624,6 +1628,26 @@ def get_customer_voice(supplier_id: str, month: str = None, user: AuthUser = Dep
         "months": available_months,
         "skus": skus,
     }
+
+# ── POST /api/sql/validate  (internal: admin + business + demo) ───────────────
+# Standalone SQL validator — a user pastes their own SQL and gets it checked
+# against the known schema. Not part of the agent pipeline; read-only, no
+# BigQuery calls, no side effects.
+
+@app.post("/api/sql/validate")
+def validate_sql_endpoint(body: SqlValidateRequest, user: AuthUser = Depends(require_internal)):
+    if not body.sql or not body.sql.strip():
+        raise HTTPException(status_code=400, detail="sql field is empty")
+
+    try:
+        return validate_user_sql(body.sql)
+    except Exception as e:
+        # A failure here means the validator itself broke (e.g. metadata.yaml
+        # unreadable) — that's a server problem, not a bad query, so 500 is
+        # correct rather than reporting it as a validation issue.
+        print(f"[api/sql/validate] ERROR — {e}")
+        raise HTTPException(status_code=500, detail=f"Validator failed: {e}")
+
 
 # ── Serve React frontend ──────────────────────────────────────────────────────
 
