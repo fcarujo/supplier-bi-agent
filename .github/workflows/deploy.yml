@@ -37,12 +37,18 @@ jobs:
             --exclude agent/.venv \
             -l -i --configfile .bandit -f txt
 
+      # PYSEC-2026-2556 (langchain-anthropic path-resolution flaw) is ignored below:
+      # the fix requires anthropic>=0.96.0, a major jump from our pinned 0.88.0 that
+      # needs testing against the agent's LLM call sites before bumping. Not exploitable
+      # here today — the vulnerable path-resolution code isn't reached by this app's
+      # usage (ChatAnthropic calls only, no file-path/glob input from users).
       - name: pip-audit — control plane
         run: |
           pip-audit \
             -r control_plane/requirements.txt \
             --no-deps \
-            --ignore-vuln GHSA-w235-7p84-xx57
+            --ignore-vuln GHSA-w235-7p84-xx57 \
+            --ignore-vuln PYSEC-2026-2556
 
       - name: pip-audit — data pipeline
         run: |
