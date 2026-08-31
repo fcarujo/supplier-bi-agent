@@ -5,16 +5,28 @@ Standalone SQL validation for user-written queries — not agent-generated SQL.
 A user pastes SQL, this checks it against the known schema before they run it
 anywhere.
 
-Stage 1 (this file, current scope):
+Stage 1 + 2 (this file, current scope):
   - Syntax validity (via sqlglot, BigQuery dialect)
   - Every referenced table exists in the schema
   - Every referenced column exists on its table
   - Basic style checks (SELECT *, missing table qualification, missing join
     conditions)
   - Line numbers on every issue
+  - Join relation validity: every JOIN's ON condition is checked against a
+    declared set of real foreign-key relationships (metadata.yaml's
+    `relations:` block) — joining on columns that exist but aren't the real
+    relationship (e.g. two tables that happen to share a column name) is
+    flagged as UNDECLARED_RELATION.
+  - Fan-out / double-counting: SUM/AVG/MIN/MAX/COUNT applied to a column on
+    the "one" side of a many-to-one join is flagged as FANOUT_AGGREGATE,
+    since that value repeats once per matching row on the "many" side and
+    gets over-counted. A plain, non-aggregated join (e.g. a denormalized
+    report row combining an incident with its supplier's name) is NOT
+    flagged — repeating a lookup value across many rows is the normal,
+    correct shape of that kind of query. Only aggregation across the
+    repetition is the actual bug.
 
 Not yet in scope (later stages):
-  - Join / relation validation (needs a `relations:` block in metadata.yaml)
   - Regulation / PII masking checks (needs `policy_rules.yaml`)
 
 Line number accuracy — read this before trusting it blindly:
@@ -95,6 +107,182 @@ def _line_for_pattern(sql_lines: list, pattern: "re.Pattern") -> Optional[int]:
 
 def _issue(severity: str, code: str, message: str, line: Optional[int] = None) -> dict:
     return {"severity": severity, "code": code, "message": message, "line": line}
+
+
+def _load_relations() -> dict:
+    """
+    Returns the `relations:` block from metadata.yaml as-is:
+        {table: {"grain": col, "references": [{"to": table, "via": col}, ...]}}
+    """
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    return cfg.get("relations", {})
+
+
+def _all_declared_edges(relations: dict):
+    """Yields (many_table, one_table, fk_column) for every declared reference."""
+    for table, info in relations.items():
+        for ref in info.get("references", []):
+            yield table, ref["to"], ref["via"]
+
+
+def _find_declared_relation(relations: dict, table_a: str, col_a: str, table_b: str, col_b: str):
+    """
+    If (table_a.col_a = table_b.col_b) matches a declared many-to-one relation
+    in either direction, returns (many_table, many_col, one_table, one_col).
+    Otherwise returns None.
+    """
+    for many_table, one_table, fk_col in _all_declared_edges(relations):
+        one_grain = relations.get(one_table, {}).get("grain")
+        if one_grain is None:
+            continue
+        if table_a == many_table and col_a == fk_col and table_b == one_table and col_b == one_grain:
+            return (many_table, fk_col, one_table, one_grain)
+        if table_b == many_table and col_b == fk_col and table_a == one_table and col_a == one_grain:
+            return (many_table, fk_col, one_table, one_grain)
+    return None
+
+
+def _describe_correct_relation(relations: dict, table_a: str, table_b: str) -> str:
+    for many_t, one_t, fk_col in _all_declared_edges(relations):
+        one_grain = relations.get(one_t, {}).get("grain")
+        if {many_t, one_t} == {table_a, table_b}:
+            return (f"The declared relationship between `{many_t}` and `{one_t}` is "
+                    f"`{many_t}.{fk_col} = {one_t}.{one_grain}`.")
+    return f"No declared relationship exists between `{table_a}` and `{table_b}` at all."
+
+
+def _build_alias_map(ast) -> dict:
+    """Maps every alias (or bare table name if unaliased) to its real table name."""
+    alias_map = {}
+    for t in ast.find_all(exp.Table):
+        bare = _bare_table_name(t)
+        alias = t.alias or bare
+        alias_map[alias] = bare
+        alias_map[bare] = bare
+    return alias_map
+
+
+def _extract_join_equalities(on_expr) -> list:
+    """
+    Walks an ON-clause expression tree and returns every column=column
+    equality found. ANDed conditions are split; anything that isn't a plain
+    column=column equality (OR'd conditions, literal filters, functions) is
+    ignored — this only needs the actual join-key equalities.
+    """
+    if on_expr is None:
+        return []
+    pairs = []
+    def walk(node):
+        if isinstance(node, exp.And):
+            walk(node.left)
+            walk(node.right)
+        elif isinstance(node, exp.EQ):
+            l, r = node.left, node.right
+            if isinstance(l, exp.Column) and isinstance(r, exp.Column):
+                pairs.append((l, r))
+    walk(on_expr)
+    return pairs
+
+
+_AGGREGATE_TYPES = (exp.Sum, exp.Avg, exp.Min, exp.Max)
+
+
+def _check_fanout(ast, alias_map: dict, many_table: str, one_table: str, one_grain_col: str, sql_lines: list) -> list:
+    """
+    Given a confirmed many-to-one join (many_table.fk = one_table.grain),
+    checks whether the query actually uses it safely:
+      - any SUM/AVG/MIN/MAX on a one_table column -> inflated (FANOUT_AGGREGATE)
+      - COUNT(*) or COUNT(one_table column) without DISTINCT -> inflated (FANOUT_AGGREGATE)
+      - any other raw (non-aggregated) one_table column selected, with no
+        GROUP BY / DISTINCT anywhere -> duplicated rows (FANOUT_DUPLICATE_ROWS)
+    The join key column itself is exempt from the last check — repeating the
+    FK/grain value across matching rows is expected, not a bug.
+    """
+    issues = []
+    flagged_cols = set()  # (table, col_name) already reported, avoid double-reporting
+
+    for agg in ast.find_all(_AGGREGATE_TYPES):
+        for col in agg.find_all(exp.Column):
+            if alias_map.get(col.table) == one_table:
+                fn_name = type(agg).__name__.upper()
+                issues.append(_issue(
+                    "error", "FANOUT_AGGREGATE",
+                    f"{fn_name}({one_table}.{col.name}) is unsafe after joining to `{many_table}`: "
+                    f"each `{one_table}` row repeats once per matching `{many_table}` row, so its "
+                    f"`{col.name}` value gets counted multiple times. Example: if one `{one_table}` "
+                    f"row has 3 matching `{many_table}` rows, its `{col.name}` is added into the "
+                    f"{fn_name} 3 times instead of once. Fix: aggregate `{many_table}` by "
+                    f"`{one_grain_col}` in a subquery first, then join the result.",
+                    line=_line_for_identifier(sql_lines, col.name),
+                ))
+                flagged_cols.add((one_table, col.name))
+
+    for cnt in ast.find_all(exp.Count):
+        arg = cnt.this
+        is_star = isinstance(arg, exp.Star)
+        is_distinct = isinstance(arg, exp.Distinct)
+        touches_one = False
+        touched_col = None
+        if not is_star:
+            for col in cnt.find_all(exp.Column):
+                if alias_map.get(col.table) == one_table:
+                    touches_one = True
+                    touched_col = col.name
+        if is_distinct:
+            continue  # COUNT(DISTINCT ...) is the correct, safe pattern
+        if is_star or touches_one:
+            target = f"{one_table}.*" if is_star else f"{one_table}.{touched_col}"
+            issues.append(_issue(
+                "error", "FANOUT_AGGREGATE",
+                f"COUNT({'*' if is_star else target}) after joining `{one_table}` to `{many_table}` "
+                f"counts rows in the joined result, not distinct `{one_table}` rows — it's inflated "
+                f"by however many `{many_table}` rows match each `{one_table}` row. Use "
+                f"COUNT(DISTINCT {one_table}.{one_grain_col}) to count `{one_table}` rows correctly.",
+                line=None,
+            ))
+            if touched_col:
+                flagged_cols.add((one_table, touched_col))
+
+    return issues
+
+
+def check_relations(ast, relations: dict, sql_lines: list) -> list:
+    issues = []
+    if not relations:
+        return issues
+
+    alias_map = _build_alias_map(ast)
+
+    for j in ast.find_all(exp.Join):
+        on_expr = j.args.get("on")
+        if on_expr is None:
+            continue  # no ON clause — already covered by MISSING_JOIN_CONDITION
+
+        pairs = _extract_join_equalities(on_expr)
+        for l_col, r_col in pairs:
+            l_table = alias_map.get(l_col.table)
+            r_table = alias_map.get(r_col.table)
+            if not l_table or not r_table or l_table == r_table:
+                continue  # can't resolve, or a self-referencing condition
+
+            declared = _find_declared_relation(relations, l_table, l_col.name, r_table, r_col.name)
+            if declared is None:
+                correct = _describe_correct_relation(relations, l_table, r_table)
+                issues.append(_issue(
+                    "error", "UNDECLARED_RELATION",
+                    f"`{l_table}.{l_col.name} = {r_table}.{r_col.name}` is not a real relationship "
+                    f"between these tables, even though both columns exist. {correct} Joining on "
+                    f"the wrong column silently produces a many-to-many match instead of the "
+                    f"intended one-to-many, multiplying rows in a way that's easy to miss.",
+                    line=_line_for_identifier(sql_lines, l_col.name),
+                ))
+                continue
+
+            many_table, _many_col, one_table, one_grain = declared
+            issues += _check_fanout(ast, alias_map, many_table, one_table, one_grain, sql_lines)
+
+    return issues
 
 
 # ── Syntax check ──────────────────────────────────────────────────────────────
@@ -238,6 +426,7 @@ def validate_user_sql(sql: str) -> dict:
     """
     schema = _load_schema()
     project, dataset = _load_project_dataset()
+    relations = _load_relations()
     sql_lines = sql.splitlines()
 
     ast, issues = check_syntax(sql)
@@ -246,6 +435,7 @@ def validate_user_sql(sql: str) -> dict:
     if ast is not None:
         issues += check_tables_and_columns(ast, schema, project, dataset, sql_lines)
         issues += check_style(ast, sql_lines)
+        issues += check_relations(ast, relations, sql_lines)
         tables_referenced = sorted({
             _bare_table_name(t) for t in ast.find_all(exp.Table)
         })

@@ -735,3 +735,32 @@ security:
     - netRevenue             # internal margin — never exposed to supplier reports
   max_raw_rows: 10000
   min_rows: 10
+
+# ── Table relations (used by the SQL validator's join/fan-out checks) ─────────
+# `grain` = the column that makes one row unique in this table.
+# `references` = the ONLY valid ways this table may be joined to another table.
+# A join using different columns than what's declared here — even if both
+# columns exist and share a name — is not a real relationship and gets
+# flagged. Example: orders.supplierID = incidents.supplierID is NOT declared
+# here on purpose; both tables reference suppliers independently, but joining
+# them directly on supplierID produces a many-to-many explosion, not a valid
+# per-row relationship. The correct path from incidents to orders is orderID.
+relations:
+  orders:
+    grain: orderID
+  suppliers:
+    grain: supplierID
+  incidents:
+    grain: incidentID
+    references:
+      - to: orders
+        via: orderID
+      - to: suppliers
+        via: supplierID
+  returns:
+    grain: returnID
+    references:
+      - to: orders
+        via: orderID
+      - to: suppliers
+        via: supplierID
